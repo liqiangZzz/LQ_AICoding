@@ -65,8 +65,7 @@ AGENT_LOG_PATH = agent_log_path()
 
 # ── Agent 工作区 ──────────────────────────────────────────────
 # Agent 操作真实代码仓库时使用的工作区，不放在课程项目源码目录中，
-# 避免 Agent 误改课程项目本身。env_utils 会根据 APP_PLATFORM 把平台路径
-# 映射到 AI_WORKSPACE_ROOT，因此这里不需要再判断 Mac 或 Windows。
+# 避免 Agent 误改课程项目本身。可通过 AI_WORKSPACE_ROOT 覆盖默认路径。
 WORKSPACE_ROOT = Path(get_env("AI_WORKSPACE_ROOT", str(Path.home() / "ai_workspace")))
 PROJECTS_DIR = WORKSPACE_ROOT / 'projects'
 

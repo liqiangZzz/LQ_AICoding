@@ -6,12 +6,12 @@
    - 防止 Agent 通过绝对路径或 `..` 访问工作区外文件。
 2. 命令风险：
    - 限制模型只能执行少量项目需要的命令族。
-   - 拦截管道、重定向、删除、关机、注册表等危险操作。
+   - 拦截管道、重定向、删除、关机等危险操作。
 3. Git 参数风险：
    - 分支名、提交信息来自模型输出，必须在进入 shell 前做归一化和校验。
 
 强调：
-这里不是完整的企业沙箱，只是课程版本地 Windows/macOS backend 的安全收敛层。
+这里不是完整的企业沙箱，只是课程版 macOS 本地 backend 的安全收敛层。
 真正生产环境还应结合容器、系统权限、审计、网络隔离和更严格的命令执行策略。
 """
 import re
@@ -44,7 +44,7 @@ def assert_path_inside(path: Path, root: Path) -> Path:
     Raises:
         WorkspacePermissionError: 如果 path 解析后位于 root 工作区外，则抛出此异常
 
-    这是文件访问的基础安全边界，防止模型使用 '..' 、盘符绝对路径等方式读取或写入工作区域以外的文件。
+    这是文件访问的基础安全边界，防止模型使用 '..' 或绝对路径等方式读取或写入工作区域以外的文件。
     """
 
     #  resolve() 方法会将路径转换为绝对路径，并规范化路径中的 .. 和 .
@@ -61,9 +61,6 @@ def assert_path_inside(path: Path, root: Path) -> Path:
 def normalize_safe_command(command: str) -> str:
     """校验 Agent 准备执行的本地命令。
 
-    白名单同时包含 Windows 与 macOS 的常见等价命令；进入真正的 shell 前，
-    `LocalShellBackend` 会再根据当前操作系统转换命令名称。
-
     模型经常会在命令末尾追加 `2>&1` 或 `| tail -5`。
     前者是为了合并 stderr，后者是 Unix 查看末尾输出的习惯。
     课程版在 Python 中已经捕获 stdout/stderr，也会把完整输出返回给模型，
@@ -79,12 +76,10 @@ def normalize_safe_command(command: str) -> str:
     # 如果未来要允许 npm、mvn、gradle 等命令，应在这里明确加白名单，
     # 同时补充对应的安全测试，而不是直接放开任意 shell。
     allowed_commands = {
-        # 两端通用开发命令
+        # 通用开发命令
         "git", "pytest", "ruff", "java", "javac",
-        # Python 在不同系统和安装方式下可能使用的名称
-        "python", "python3", "py", "pip", "pip3",
-        # Windows cmd.exe 常用命令
-        "dir", "type", "where", "cls",
+        # Python 在 macOS 上常用的命令名称
+        "python", "python3", "pip", "pip3",
         # macOS/Unix 常用命令
         "ls", "cat", "which", "pwd", "clear", "test",
     }
@@ -109,20 +104,11 @@ def normalize_safe_command(command: str) -> str:
     if any(operator in normalized for operator in shell_operators):
         raise WorkspacePermissionError(f"Blocked shell operator in command: {command}")
     # 这些危险片段即使出现在白名单命令后面，也应直接拒绝。
-    # 例如模型生成 `python -c "import os; os.system('del ...')"` 时，仍需要额外防线。
+    # 例如模型生成 `python -c "import os; os.system('rm -rf ...')"` 时，仍需要额外防线。
     blocked = [
         "format ",
         "shutdown",
-        "restart-computer",
-        "remove-item",
-        "remove-item -recurse",
         "rm -rf",
-        "reg delete",
-        "del ",
-        "del /s",
-        "rmdir ",
-        "rmdir /s",
-        "cipher /w",
     ]
     if any(token in lowered for token in blocked):
         raise WorkspacePermissionError(f"Blocked dangerous command: {command}")

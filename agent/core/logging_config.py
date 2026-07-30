@@ -53,8 +53,7 @@ def _close_and_remove_handlers(logger: logging.Logger) -> None:
     """
     移除并关闭旧 handler，避免 reload/test 重复写日志。
 
-    Windows 下文件句柄被占用会影响日志轮转和测试清理，因此不能只 remove，
-    还要显式 close。
+    显式关闭文件句柄，确保日志轮转和测试清理稳定。
     """
     for handler in list(logger.handlers):
         logger.removeHandler(handler)

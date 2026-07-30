@@ -2,6 +2,8 @@
 
 一个面向 AI Coding 场景的 Python 后端基础项目，目标是让 AI Agent 在受控工作区内完成代码读取、修改、验证和 GitHub 协作，同时为联网检索、代码审查记录、运行事件与日志追踪提供统一基础设施。
 
+> **运行平台：本项目仅面向 macOS 环境开发和维护。** 代码、Shell 命令、文件路径、Python 虚拟环境及 Git AskPass 均按 macOS 约定实现，不提供 Windows 或 Linux 兼容支持。
+>
 > 当前项目处于持续开发阶段，仓库主要包含后端基础能力和工具层实现，尚未提供完整前端界面、稳定版业务 API 与依赖锁定文件。
 
 ## 项目目标
@@ -10,7 +12,7 @@
 
 - 将 Agent 的文件操作限制在指定工作区内；
 - 对可执行命令进行白名单和危险操作检查；
-- 统一处理 macOS 与 Windows 的路径和命令差异；
+- 为 macOS 提供统一的本地路径和命令执行环境；
 - 使用 GitHub 完成分支推送、Pull Request 创建与评论；
 - 隔离并脱敏 GitHub Token、模型 API Key 等敏感信息；
 - 记录 Agent 执行事件、代码审查发现和运行日志；
@@ -26,7 +28,7 @@
 - `/projects`、`/skills`、`/policies` 等虚拟路径映射；
 - 工作区边界校验，阻止路径穿越和越界访问；
 - 命令白名单、危险命令拦截和 Shell 操作符限制；
-- macOS 与 Windows 命令、路径和 Python 虚拟环境适配；
+- macOS 命令、路径和 Python 虚拟环境支持；
 - 命令超时、输出截断和敏感 Token 脱敏。
 
 ### 2. GitHub 协作
@@ -76,7 +78,7 @@ git@github.com:liqiangZzz/LQ_AICoding.git
 ### 6. 日志与配置
 
 - 使用 `.env` 管理本地配置；
-- 支持 macOS 和 Windows 路径配置映射；
+- 使用简洁的 macOS 路径配置；
 - 后端日志与 Agent 运行日志分离；
 - 使用 `TimedRotatingFileHandler` 按时间轮转日志；
 - 支持日志级别、轮转周期和保留天数配置。
@@ -128,14 +130,14 @@ LQ_AICoding/
 └── README.md
 ```
 
-## 环境要求
+## 环境要求（仅 macOS）
 
+- **操作系统：macOS（唯一支持的平台）**；
 - Python 3.11 或更高版本；
 - Git；
 - 推荐配置 GitHub SSH Key；
 - 如需调用 GitHub PR API，需要 GitHub Personal Access Token；
 - 如需联网搜索，需要智谱搜索 API Key；
-- macOS 或 Windows。
 
 ## 快速开始
 
@@ -155,18 +157,9 @@ cd LQ_AICoding
 
 ### 2. 创建虚拟环境
 
-macOS / Linux：
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-Windows PowerShell：
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
 ```
 
 ### 3. 安装基础依赖
@@ -184,12 +177,6 @@ pip install fastapi uvicorn python-dotenv httpx requests \
 
 ```bash
 cp .env.example .env
-```
-
-Windows CMD：
-
-```bat
-copy .env.example .env
 ```
 
 根据本机目录和实际使用的服务编辑 `.env`。不要将 `.env` 提交到 GitHub。
@@ -233,25 +220,22 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 | `QWEN_API_KEY` / `QWEN_BASE_URL` | 通义千问模型配置 |
 | `ZHIPU_API_KEY` | 智谱 Web Search 配置 |
 
-### 工作区与平台
+### 工作区
 
 | 变量 | 说明 |
 |---|---|
-| `APP_PLATFORM` | `mac` 或 `windows` |
-| `AI_WORKSPACE_ROOT_MAC` | macOS Agent 工作区根目录 |
-| `AI_WORKSPACE_ROOT_WINDOWS` | Windows Agent 工作区根目录 |
-| `LOCAL_SHELL_WORKSPACE_MAC` | macOS 本地 Shell 工作区 |
-| `LOCAL_SHELL_WORKSPACE_WINDOWS` | Windows 本地 Shell 工作区 |
+| `AI_WORKSPACE_ROOT` | macOS Agent 工作区根目录 |
+| `LOCAL_SHELL_WORKSPACE` | macOS 本地 Shell 工作区 |
 | `LOCAL_SHELL_ENABLE_COMMAND_GUARD` | 是否启用命令安全守卫 |
 
 ### 数据与日志
 
 | 变量 | 说明 |
 |---|---|
-| `LQ_AICODING_DATA_DIR_*` | 数据目录 |
-| `CHECKPOINT_DB_PATH_*` | LangGraph checkpoint SQLite 路径 |
-| `STORE_DB_PATH_*` | 业务 Store SQLite 路径 |
-| `LQ_AICODING_LOG_DIR_*` | 日志目录 |
+| `LQ_AICODING_DATA_DIR` | 数据目录 |
+| `CHECKPOINT_DB_PATH` | LangGraph checkpoint SQLite 路径 |
+| `STORE_DB_PATH` | 业务 Store SQLite 路径 |
+| `LQ_AICODING_LOG_DIR` | 日志目录 |
 | `LQ_AICODING_LOG_LEVEL` | 日志级别 |
 | `LQ_AICODING_LOG_RETENTION_DAYS` | 日志保留天数 |
 

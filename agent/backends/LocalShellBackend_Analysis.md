@@ -9,9 +9,9 @@
 `LocalShellBackend` 继承自 `deepagents.backends.sandbox.BaseSandbox`，实现了 DeepAgents 定义的文件操作和命令执行协议。它负责：
 
 - **虚拟路径映射**：Agent 只能看到 `/projects`、`/skills`、`/policies` 等逻辑路径，后端将其映射到宿主机真实目录。
-- **命令安全执行**：对 Agent 提交的命令进行危险性检查、路径越界拦截、平台命令转换，并注入 Git 认证信息。
+- **命令安全执行**：对 Agent 提交的命令进行危险性检查、路径越界拦截和虚拟路径转换，并注入 Git 认证信息。
 - **文件 I/O 控制**：提供读取、写入、编辑、搜索、上传下载等文件操作，并强制限定修改范围。
-- **跨平台兼容**：在 Windows 和 macOS 上自动适配命令语法（如 `python3` → `python`，`ls` ↔ `dir`）。
+- **macOS 运行环境**：使用 macOS 的 shell、路径和 Python 虚拟环境约定。
 - **Git 非交互认证**：通过 `GIT_ASKPASS` 脚本注入 GitHub Token，避免弹窗或依赖全局凭据。
 
 ---
@@ -28,13 +28,13 @@
    在根目录下创建 `projects/`、`skills/`、`policies/`、`reviews/`、`runtimes/`、`tmp/`、`logs/` 和 `secrets/`。这些目录分别对应虚拟路径 `/projects`、`/skills` 等。
 
 3. **初始化共享 Python 虚拟环境（可选）**
-   如果环境变量 `LOCAL_SHELL_CREATE_PYTHON_VENV` 开启，会在 `runtimes/python/default/.venv` 下创建虚拟环境，并将 `bin/`（或 `Scripts/`）加入子进程的 `PATH`。
+   如果环境变量 `LOCAL_SHELL_CREATE_PYTHON_VENV` 开启，会在 `runtimes/python/default/.venv` 下创建虚拟环境，并将 `bin/` 加入子进程的 `PATH`。
 
 4. **生成策略文件**
    在 `policies/` 下创建默认的 `workspace.md`、`git.md`、`security.md`，作为长期规则文本，可被 Agent 读取。
 
 5. **生成 Git AskPass 脚本**
-   在 `secrets/` 下创建 `github_askpass.ps1`、`github_askpass.cmd` 和 `github_askpass.sh`，分别对应 Windows CMD、PowerShell 和 Unix shell。Git 会通过 `core.askPass` 调用这些脚本，从环境变量获取用户名和 Token。
+   在 `secrets/` 下创建 `github_askpass.sh`。Git 会通过 `core.askPass` 调用脚本，从环境变量获取用户名和 Token。
 
 6. **写入工作区标记文件**
    生成 `.ai_coding_workspace.json`，记录后端类型、根目录和虚拟目录列表，方便外部工具识别。
@@ -46,10 +46,9 @@
 `execute(command, timeout)` 是 Agent 最常用的入口，执行流程如下：
 
 1. **安全守卫（第一层）**
-   调用 `_deny_reason(command)`，检查是否包含危险模式（如 `format`、`shutdown`、`reg delete`）或工作区外的绝对路径。若命中，直接返回拒绝响应（退出码 126）。
+   调用 `_deny_reason(command)`，检查是否包含危险模式（如 `format`、`shutdown`）或工作区外的绝对路径。若命中，直接返回拒绝响应（退出码 126）。
 
 2. **命令预处理（`_prepare_command`）**
-   - 平台别名替换：Windows 下 `python3` → `python`，`pip3` → `pip`，`ls` → `dir` 等；macOS 下反方向替换。
    - **虚拟路径替换**：用正则匹配 `/projects/xxx`、`/skills/xxx` 等，将其映射为真实路径（并加引号防空格）。
    - **Git AskPass 注入**：如果命令以 `git` 开头，自动添加 `-c credential.helper= -c core.askPass="..."`，强制使用自定义认证脚本。
 
@@ -97,39 +96,35 @@
 
 ### 5.3 命令黑名单（`_deny_reason`）
 检查命令中是否包含：
-- 路径穿越（`../` 或 `..\\`）
-- 危险系统命令（`format`、`shutdown`、`reg delete` 等）
-- 工作区外的绝对路径（Windows 盘符路径或 POSIX 绝对路径，但虚拟路径白名单除外）
+- 路径穿越（`../`）
+- 危险系统命令（`format`、`shutdown` 等）
+- 工作区外的 POSIX 绝对路径（虚拟路径白名单除外）
 
 这一层是粗粒度拦截，后续还有 `normalize_safe_command`（在外部模块）做更细粒度的白名单归一化。
 
 ---
 
-## 6. 跨平台适配设计
+## 6. macOS 路径与命令设计
 
 ### 6.1 路径映射
 - 虚拟路径以 `/` 开头，如 `/projects/my-repo`，后端映射到 `self.root/projects/my-repo`。
-- 兼容 Windows 盘符路径（如 `D:\src`）也允许，但必须位于工作区内。
 - 命令中的虚拟路径会被正则替换为带引号的真实路径，防止空格或特殊字符引起解析错误。
 
-### 6.2 命令别名转换
-在 `_prepare_command` 中，根据 `self.is_windows` 执行互换：
-- Windows 识别 `python3`、`pip3`、`ls`、`cat`、`which`、`clear` → 转换为 `python`、`pip`、`dir`、`type`、`where`、`cls`。
-- macOS 则相反转换（`dir`→`ls` 等）。
-- 特殊处理 `pwd` → `cd`（Windows），`test -d` → `if exist`。
+### 6.2 命令预处理
+`_prepare_command` 将虚拟路径转换为真实路径，并为 Git 命令注入 AskPass 配置。
 
-### 6.3 Git AskPass 平台差异
-- Windows 使用 `.cmd` 脚本（通过 PowerShell 执行），macOS 使用 `.sh` 脚本，并自动赋予执行权限。
+### 6.3 Git AskPass
+- 使用 `.sh` 脚本，并自动赋予执行权限。
 - 环境变量 `GIT_ASKPASS` 指向相应脚本，`GITHUB_ASKPASS_USERNAME` 固定为 `x-access-token`，`GITHUB_ASKPASS_TOKEN` 从环境变量读取。
 
 ### 6.4 Python 虚拟环境路径
-- Windows 下 `bin/` 替换为 `Scripts/`，Python 可执行文件名为 `python.exe`，macOS 为 `python`。
+- 虚拟环境可执行目录为 `bin/`，Python 可执行文件名为 `python`。
 
 ---
 
 ## 7. 辅助方法与兼容接口
 
-- **`_execution_env()`**：构建子进程环境，将 `PATH` 指向虚拟环境 `bin/`（或 `Scripts/`），设置 `VIRTUAL_ENV`，注入 `GIT_TERMINAL_PROMPT=0` 和 `GCM_INTERACTIVE=Never`，以及 AskPass 所需的环境变量。
+- **`_execution_env()`**：构建子进程环境，将 `PATH` 指向虚拟环境 `bin/`，设置 `VIRTUAL_ENV`，注入 `GIT_TERMINAL_PROMPT=0` 以及 AskPass 所需的环境变量。
 - **`_mask_token(text)`**：将 `GITHUB_TOKEN`、`GH_TOKEN` 或 `SCM_GITHUB_TOKEN` 替换为 `*****`，防止敏感信息泄露到日志或输出。
 - **旧兼容接口**：`run()`、`read_file()`、`write_file()`、`list_files()` 保留给历史工具使用，内部调用新的协议方法，降低迁移成本。
 

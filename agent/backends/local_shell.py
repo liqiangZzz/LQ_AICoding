@@ -1,13 +1,11 @@
 """受控的本地 Shell 后端。
 
-本模块对 DeepAgents 暴露统一的虚拟文件路径和命令执行接口，并将差异集中在三处：
-路径映射、平台命令转换、Python venv/Git AskPass 选择。业务工具只需使用
-`/projects` 等虚拟路径，无需感知宿主机运行在 Windows 还是 macOS。
+本模块在 macOS 上对 DeepAgents 暴露统一的虚拟文件路径和命令执行接口。
+业务工具通过 `/projects` 等虚拟路径访问受控工作区。
 """
 
 import dataclasses
 import fnmatch
-import locale
 import logging
 import os
 import re
@@ -47,9 +45,7 @@ VIRTUAL_RUNTIMES = "/runtimes"
 VIRTUAL_TMP = "/tmp"
 VIRTUAL_LOGS = "/logs"
 
-# 匹配命令中的 Windows 绝对路径（如 D:\xxx）
-_DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]:[\\/][^\s\"';&|<>]*)")
-# 匹配 macOS/Linux 绝对路径，同时避开 https:// 这类 URL。
+# 匹配 macOS 绝对路径，同时避开 https:// 这类 URL。
 _POSIX_PATH_RE = re.compile(r"(?<![A-Za-z0-9:/])(/[^\s\"';&|<>]+)")
 # 匹配命令中的虚拟路径（如 /projects/my-repo），用于自动转换为真实路径
 _VIRTUAL_ROOT_NAMES = ("projects", "skills", "policies", "reviews", "runtimes", "tmp", "logs")
@@ -60,15 +56,6 @@ _VIRTUAL_PATH_RE = re.compile(
 _DANGEROUS_PATTERNS = (
     r"\bformat\b",
     r"\bshutdown\b",
-    r"\brestart-computer\b",
-    r"\bstop-computer\b",
-    r"\bset-executionpolicy\b",
-    r"\breg\s+(delete|add|import|save|restore)\b",
-    r"\bnet\s+user\b",
-    r"\bnet\s+localgroup\b",
-    r"\btaskkill\b",
-    r"\bdiskpart\b",
-    r"\bbcdedit\b",
 )
 
 
@@ -98,7 +85,7 @@ class CommandResult:
 
 class LocalShellBackend(BaseSandbox):
     """
-    Windows/macOS 本地 DeepAgents backend。
+    macOS 本地 DeepAgents backend。
 
     核心职责：
     1. 实现 DeepAgents 文件协议：`ls/read/write/edit/glob/grep/upload/download`；
@@ -118,7 +105,7 @@ class LocalShellBackend(BaseSandbox):
             timeout: int = 3600
 
     ) -> None:
-        # 工作区优先级：调用方传入 > 平台映射后的环境变量 > settings.py 默认值。
+        # 工作区优先级：调用方传入 > 环境变量 > settings.py 默认值。
         if isinstance(workspace, Workspace):
             self.workspace = workspace
             configured_root = workspace.root
@@ -128,14 +115,10 @@ class LocalShellBackend(BaseSandbox):
 
         self.root = Path(configured_root).expanduser().resolve()
 
-        # APP_PLATFORM 只负责选择配置路径；命令语法必须依据真实宿主系统判断，
-        # 否则在 Mac 上误选 windows 配置时会尝试执行 cmd.exe 语法。
-        self.is_windows = os.name == "nt"
-
-        # Windows 控制台常使用本地代码页，macOS 通常使用 UTF-8；允许环境变量显式覆盖。
+        # macOS 默认使用 UTF-8；仍允许环境变量显式覆盖。
         self.output_encoding = (
                 os.environ.get("LOCAL_SHELL_OUTPUT_ENCODING", "").strip()
-                or locale.getpreferredencoding(False)
+                or "utf-8"
         )
 
         # 工作区子目录规划
@@ -192,18 +175,18 @@ class LocalShellBackend(BaseSandbox):
         try:
             # 命令预处理也可能因为路径越界而失败，因此包含在结构化异常处理内。
             prepared_command = self._prepare_command(command)
-            # shell=True 会在 Windows 使用 cmd.exe，在 macOS 使用 /bin/sh。
+            # shell=True 在 macOS 上使用 /bin/sh。
             completed = subprocess.run(
                 prepared_command,  # 最终执行的命令字符串，已经完成虚拟路径转换、Git 认证注入等预处理
                 cwd=self.projects_dir,  # 子进程工作目录，默认限制在 projects 目录下执行
                 capture_output=True,  # 捕获 stdout 和 stderr，避免命令输出直接写到后端进程控制台
                 text=True,  # 以文本模式返回输出内容，而不是 bytes
-                encoding=self.output_encoding,  # 使用系统编码，兼容 Windows 本地代码页与 macOS UTF-8
+                encoding=self.output_encoding,
                 errors="replace",  # 遇到无法解码的字符时用替代字符处理，避免解码异常中断任务
                 timeout=timeout or self.default_timeout,  # 单次命令执行超时时间，防止长时间阻塞 Agent 运行线程
                 env=self._execution_env(),  # 子进程环境变量，包含 PATH、虚拟环境、Git 非交互认证等配置
                 check=False,  # 不因非 0 退出码抛异常，保留 exit_code 交给 Agent 判断后续处理
-                shell=True,  # 通过系统 shell 执行字符串命令，兼容 Windows 或 Mac 下的内置命令和 Git 命令
+                shell=True,  # 通过 macOS 系统 shell 执行内置命令和 Git 命令
             )
 
             # 命令输出处理
@@ -575,14 +558,14 @@ class LocalShellBackend(BaseSandbox):
                 path.write_text(content, encoding="utf-8")
 
     def _ensure_shared_python_venv(self) -> None:
-        """按当前系统目录结构创建共享 Python 虚拟环境。
+        """创建 macOS 共享 Python 虚拟环境。
 
-        Windows 检查 `Scripts/python.exe`，macOS 检查 `bin/python`。
+        检查 `.venv/bin/python` 是否存在。
         创建功能由 LOCAL_SHELL_CREATE_PYTHON_VENV 控制，默认关闭。
         """
         if self._venv_python_path().exists():
             return
-        python = shutil.which("python") or shutil.which("python3") or shutil.which("py")
+        python = shutil.which("python3") or shutil.which("python")
         if not python:
             self._venv_error = "python executable not found on PATH"
             return
@@ -616,29 +599,7 @@ class LocalShellBackend(BaseSandbox):
         - Git 命令仍然可以走标准 HTTPS 认证流程；
         - 后端可以统一通过 `_execution_env()` 注入认证环境变量。
         """
-        ps1 = self.secrets_dir / "github_askpass.ps1"
-        cmd = self.secrets_dir / "github_askpass.cmd"
         sh = self.secrets_dir / "github_askpass.sh"
-        if not ps1.exists():
-            ps1.write_text(
-                "\n".join(
-                    [
-                        "param([string]$Prompt)",
-                        "if ($Prompt -match '(?i)username') {",
-                        "  [Console]::Out.Write($env:GITHUB_ASKPASS_USERNAME)",
-                        "} else {",
-                        "  [Console]::Out.Write($env:GITHUB_ASKPASS_TOKEN)",
-                        "}",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-        if not cmd.exists():
-            cmd.write_text(
-                f'@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "{ps1}" %*\r\n',
-                encoding="utf-8",
-            )
         if not sh.exists():
             sh.write_text(
                 "#!/bin/sh\n"
@@ -649,34 +610,29 @@ class LocalShellBackend(BaseSandbox):
                 encoding="utf-8",
                 newline="\n",
             )
-        if not self.is_windows:
-            # Git 在 macOS 上直接执行 shell 脚本，因此必须补充用户执行权限。
-            sh.chmod(0o700)
+        sh.chmod(0o700)
 
-    # 下列三个方法集中处理 venv/AskPass 的平台目录差异，调用方无需重复判断系统。
     def _venv_bin_dir(self) -> Path:
-        """返回当前系统虚拟环境的可执行文件目录。"""
-        return self.shared_python_venv / ("Scripts" if self.is_windows else "bin")
+        """返回 macOS 虚拟环境的可执行文件目录。"""
+        return self.shared_python_venv / "bin"
 
     def _venv_python_path(self) -> Path:
-        """返回当前系统虚拟环境的 Python 可执行文件。"""
-        executable = "python.exe" if self.is_windows else "python"
-        return self._venv_bin_dir() / executable
+        """返回 macOS 虚拟环境的 Python 可执行文件。"""
+        return self._venv_bin_dir() / "python"
 
     def _askpass_path(self) -> Path:
-        """返回当前系统可执行的 Git AskPass 脚本。"""
-        suffix = "cmd" if self.is_windows else "sh"
-        return self.secrets_dir / f"github_askpass.{suffix}"
+        """返回 macOS 可执行的 Git AskPass 脚本。"""
+        return self.secrets_dir / "github_askpass.sh"
 
     # ── 路径处理 ──────────────────────────────────────────────
 
     def _normalize_compat_path(self, path: str | os.PathLike[str]) -> str:
         """把旧工具传过来的路径统一成虚拟路径格式（/ 开头）。
 
-        旧工具可能传入 `.`、`projects/a.py`、`\\projects\\a.py` 等形式。
+        旧工具可能传入 `.`、`projects/a.py` 等形式。
         后端内部统一转换成 `/projects/a.py` 这种虚拟路径，后续再走同一套解析和权限检查。
         """
-        raw = str(path).strip().replace("\\", "/")
+        raw = str(path).strip()
         if raw in {"", "."}:
             return "/"
         if raw.startswith("/"):
@@ -686,17 +642,12 @@ class LocalShellBackend(BaseSandbox):
     def _resolve_virtual_path(self, path: str | os.PathLike[str]) -> Path:
         """把虚拟路径（如 `/projects/my-repo`）转成真实文件系统路径。
 
-        这是文件读写权限的关键入口。无论调用方传入虚拟路径还是 Windows 绝对路径，
-        最终都必须解析成真实路径，并确认它仍然位于 `self.root` 工作区内。
+        这是文件读写权限的关键入口。路径最终必须解析成真实路径，
+        并确认它仍然位于 `self.root` 工作区内。
         """
         raw = str(path).strip() or "/"
-        if re.match(r"^[A-Za-z]:[\\/]", raw):
-            resolved = Path(raw).resolve()
-        else:
-            normalized = raw.replace("\\", "/")
-            if normalized.startswith("/"):
-                normalized = normalized[1:]
-            resolved = (self.root / normalized).resolve()
+        normalized = raw[1:] if raw.startswith("/") else raw
+        resolved = (self.root / normalized).resolve()
         # 安全检查：必须落在工作区范围内
         if not self._is_under_root(resolved):
             raise PermissionError(f"path outside local workspace is denied: {path}")
@@ -767,72 +718,35 @@ class LocalShellBackend(BaseSandbox):
         这里是 'normalize_safe_command()' 之前的第一层粗粒度拒绝：
         1. 拦截 '..' 路径穿越
         2. 拦截明显危险的系统命令
-        3. 分别识别盘符路径和 POSIX 路径，拦截工作区外绝对路径。
+        3. 识别 POSIX 路径，拦截工作区外绝对路径。
 
         两层校验的分工是： 本函数做场景拒绝， 'normalize_safe_command()' 做命令白名单和语法收敛。
         """
         lowered = command.lower()
-        if "../" in command or "..\\" in command:
+        if "../" in command:
             return "path traversal outside workspace is denied"
         for pattern in _DANGEROUS_PATTERNS:
             if re.search(pattern, lowered):
                 return f"dangerous command pattern matched: {pattern}"
-        for match in _DRIVE_PATH_RE.finditer(lowered):
-            candidate = Path(match.group(1)).resolve()
+        # 虚拟路径会在下一阶段映射到工作区，可以放行；其他绝对路径必须校验。
+        virtual_roots = tuple(f"/{name}" for name in _VIRTUAL_ROOT_NAMES)
+        for match in _POSIX_PATH_RE.finditer(command):
+            raw_path = match.group(1)
+            if raw_path.startswith(virtual_roots):
+                continue
+            candidate = Path(raw_path).expanduser().resolve()
             if not self._is_under_root(candidate):
                 return f"absolute path outside workspace: {candidate}"
-        if not self.is_windows:
-            # 虚拟路径会在下一阶段映射到工作区，可以放行；其他 POSIX 绝对路径必须校验。
-            virtual_roots = tuple(f"/{name}" for name in _VIRTUAL_ROOT_NAMES)
-            for match in _POSIX_PATH_RE.finditer(command):
-                raw_path = match.group(1)
-                if raw_path.startswith(virtual_roots):
-                    continue
-                candidate = Path(raw_path).expanduser().resolve()
-                if not self._is_under_root(candidate):
-                    return f"absolute path outside workspace: {candidate}"
         return None
 
     # ── 命令预处理 ───────────────────────────────────────────
 
     def _prepare_command(self, command: str) -> str:
         """
-        执行前的命令预处理 ：适配 Windows 或 Mac ，替换虚拟路径。
-
-        LLM 可能生成另一平台习惯的命令，例如 `python3`、`pwd`、`dir`。
-        本方法只转换当前系统不支持的表达，同时把 `/projects/...` 这样的
-        虚拟路径替换为带引号的真实路径。
+        执行前的命令预处理：替换虚拟路径并注入 Git AskPass 配置。
         """
 
-        # 第一步：处理可执行文件名称差异；第二步：把虚拟路径换成真实路径。
-        prepared = command
-        if self.is_windows:
-            prepared = re.sub(r"(?<![\w-])python3(?=\s|$)", "python", prepared)
-            prepared = re.sub(r"(?<![\w-])pip3(?=\s|$)", "pip", prepared)
-        prepared = _VIRTUAL_PATH_RE.sub(self._virtual_command_path_replacement, prepared)
-
-        # cmd.exe 不支持的常用 Unix 命令只在 Windows 下转换；macOS 保持原命令。
-        if self.is_windows:
-            stripped = prepared.strip()
-            if stripped == "pwd":
-                return "cd"
-            if stripped == 'printf %s "$HOME"':
-                return "echo %USERPROFILE%"
-            directory_test = re.fullmatch(r"test\s+-d\s+(.+)", stripped, flags=re.IGNORECASE)
-            if directory_test:
-                target = directory_test.group(1).strip().strip('"').strip("'").rstrip("\\/")
-                return f'if exist "{target}\\NUL" (echo ok) else (exit /b 1)'
-            aliases = {"ls": "dir", "cat": "type", "which": "where", "clear": "cls"}
-            first, separator, rest = stripped.partition(" ")
-            if first.lower() in aliases:
-                prepared = aliases[first.lower()] + (separator + rest if separator else "")
-        else:
-            # 兼容模型偶尔在 macOS 上生成的 Windows 内置命令。
-            stripped = prepared.strip()
-            aliases = {"dir": "ls", "type": "cat", "where": "which", "cls": "clear"}
-            first, separator, rest = stripped.partition(" ")
-            if first.lower() in aliases:
-                prepared = aliases[first.lower()] + (separator + rest if separator else "")
+        prepared = _VIRTUAL_PATH_RE.sub(self._virtual_command_path_replacement, command)
         return self._prepare_git_command(prepared)
 
     def _prepare_git_command(self, command: str) -> str:
@@ -911,9 +825,9 @@ class LocalShellBackend(BaseSandbox):
         构造子进程环境变量：注入 venv、Git 安全配置、GitHub 认证信息。
 
         统一处理以下内容：
-        1. 将当前平台的共享 Python venv 放到 PATH 最前面；
+        1. 将共享 Python venv 的 `bin` 目录放到 PATH 最前面；
         2. 禁止 Git 弹出交互式认证窗口；
-        3. 通过当前平台的 GIT_ASKPASS 脚本注入 GitHub token。
+        3. 通过 macOS 的 GIT_ASKPASS 脚本注入 GitHub token。
 
         token 只存在于子进程环境变量中，不会拼接到命令文本或日志里。
         """
@@ -926,8 +840,6 @@ class LocalShellBackend(BaseSandbox):
 
         # 禁止 Git 交互式弹窗，出错直接返回
         env["GIT_TERMINAL_PROMPT"] = "0"
-        env["GCM_INTERACTIVE"] = "Never"
-
         github_token = (
             get_env("GITHUB_TOKEN").strip()
             or get_env("GH_TOKEN").strip()
