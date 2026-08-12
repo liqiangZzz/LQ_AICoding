@@ -11,7 +11,7 @@
    - 分支名、提交信息来自模型输出，必须在进入 shell 前做归一化和校验。
 
 强调：
-这里不是完整的企业沙箱，只是课程版 macOS 本地 backend 的安全收敛层。
+这里不是完整的企业沙箱，只是测试版 macOS / Windows 本地 backend 的安全收敛层。
 真正生产环境还应结合容器、系统权限、审计、网络隔离和更严格的命令执行策略。
 """
 import re
@@ -77,11 +77,14 @@ def normalize_safe_command(command: str) -> str:
     # 同时补充对应的安全测试，而不是直接放开任意 shell。
     allowed_commands = {
         # 通用开发命令
-        "git", "pytest", "ruff", "java", "javac",
-        # Python 在 macOS 上常用的命令名称
-        "python", "python3", "pip", "pip3",
+        "git", "git.exe", "pytest", "pytest.exe", "ruff", "ruff.exe",
+        "java", "java.exe", "javac", "javac.exe",
+        # Python 在 macOS / Windows 上常用的命令名称
+        "python", "python.exe", "python3", "py", "pip", "pip.exe", "pip3",
         # macOS/Unix 常用命令
         "ls", "cat", "which", "pwd", "clear", "test",
+        # Windows 常用的只读命令
+        "dir", "type", "where", "cd", "cls",
     }
     if first_word not in allowed_commands:
         raise WorkspacePermissionError(f"Command is not allowed: {command}")

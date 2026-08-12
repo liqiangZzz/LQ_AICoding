@@ -1,18 +1,20 @@
 """受控的本地 Shell 后端。
 
-本模块在 macOS 上对 DeepAgents 暴露统一的虚拟文件路径和命令执行接口。
+本模块在 macOS 和 Windows 上对 DeepAgents 暴露统一的虚拟文件路径和命令执行接口。
 业务工具通过 `/projects` 等虚拟路径访问受控工作区。
 """
 
-import dataclasses
 import fnmatch
+import hashlib
+import locale
 import logging
 import os
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -31,6 +33,11 @@ from agent.backends.permissions import normalize_safe_command
 from agent.backends.workspace import Workspace
 from agent.core.settings import WORKSPACE_ROOT
 from agent.env_utils import get_env
+from agent.platform_utils import (
+    host_platform,
+    platform_display_name,
+    resolve_local_shell_platform,
+)
 
 logger = logging.getLogger('agent.run.shell')
 
@@ -45,8 +52,10 @@ VIRTUAL_RUNTIMES = "/runtimes"
 VIRTUAL_TMP = "/tmp"
 VIRTUAL_LOGS = "/logs"
 
-# 匹配 macOS 绝对路径，同时避开 https:// 这类 URL。
+# 匹配 POSIX 绝对路径，同时避开 https:// 这类 URL。
 _POSIX_PATH_RE = re.compile(r"(?<![A-Za-z0-9:/])(/[^\s\"';&|<>]+)")
+# 匹配 Windows 盘符绝对路径，如 C:\\workspace\\repo。
+_WINDOWS_PATH_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]:[\\/][^\s\"';&|<>]+)")
 # 匹配命令中的虚拟路径（如 /projects/my-repo），用于自动转换为真实路径
 _VIRTUAL_ROOT_NAMES = ("projects", "skills", "policies", "reviews", "runtimes", "tmp", "logs")
 _VIRTUAL_PATH_RE = re.compile(
@@ -59,6 +68,30 @@ _DANGEROUS_PATTERNS = (
 )
 
 
+def _resolve_configured_subpath(root: Path, value: str, *, env_name: str) -> Path:
+    """将配置的工作区子路径安全解析到 root 内。
+
+    同时按 POSIX 和 Windows 语义识别绝对路径，防止在 macOS 上漏掉
+    ``C:/...``，或在 Windows 上漏掉反斜杠形式的路径穿越。
+    """
+
+    normalized = value.strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError(f"{env_name} cannot be empty")
+    if PurePosixPath(normalized).is_absolute() or PureWindowsPath(normalized).is_absolute():
+        raise ValueError(f"{env_name} must be relative to LOCAL_SHELL_WORKSPACE")
+    parts = PurePosixPath(normalized).parts
+    if ".." in parts:
+        raise ValueError(f"{env_name} cannot escape LOCAL_SHELL_WORKSPACE")
+
+    resolved = (root / Path(*parts)).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{env_name} cannot escape LOCAL_SHELL_WORKSPACE") from exc
+    return resolved
+
+
 def _mask_token(text: str) -> str:
     """
     把文本中的 GitHub Token 替换为 ***，防止泄露到日志和返回值里。
@@ -67,11 +100,11 @@ def _mask_token(text: str) -> str:
     for token_name in ("GITHUB_TOKEN", "GH_TOKEN", "SCM_GITHUB_TOKEN"):
         token = get_env(token_name).strip()
         if token:
-            masked = re.sub(re.escape(token), "*****", masked)
+            masked = re.sub(re.escape(token), "***", masked)
     return masked
 
 
-@dataclasses.dataclass
+@dataclass
 class CommandResult:
     """
     命令执行结果，兼容旧版 Git 工具。
@@ -85,7 +118,7 @@ class CommandResult:
 
 class LocalShellBackend(BaseSandbox):
     """
-    macOS 本地 DeepAgents backend。
+    macOS / Windows 本地 DeepAgents backend。
 
     核心职责：
     1. 实现 DeepAgents 文件协议：`ls/read/write/edit/glob/grep/upload/download`；
@@ -102,27 +135,61 @@ class LocalShellBackend(BaseSandbox):
             self,
             workspace: Workspace | str | os.PathLike[str] | None = None,
             *,
-            timeout: int = 3600
+            timeout: int = 3600,
+            read_only: bool = False,
 
     ) -> None:
+
+        # 检查是否启用本地 shell 沙箱
+        sandbox_type = os.environ.get("SANDBOX_TYPE", "local_shell").strip().lower()
+        # 如果不是本地 shell 沙箱，则抛出异常
+        if sandbox_type != "local_shell":
+            raise ValueError(
+                f"Unsupported SANDBOX_TYPE={sandbox_type!r}; current version only supports local_shell"
+            )
+
+        # 解析本地 shell 平台
+        self.platform = resolve_local_shell_platform()
+        # 获取本地 shell 平台显示名称
+        self.platform_name = platform_display_name(self.platform)
+        # 检查本地 shell 平台是否匹配主机平台
+        actual_platform = host_platform()
+        # 如果本地 shell 平台与主机平台不匹配，则抛出异常
+        if self.platform != actual_platform:
+            raise RuntimeError(
+                f"LOCAL_SHELL_PLATFORM={self.platform} does not match host platform "
+                f"{actual_platform}; use auto or select the current host platform"
+            )
+
         # 工作区优先级：调用方传入 > 环境变量 > settings.py 默认值。
         if isinstance(workspace, Workspace):
+            # 如果工作区是 Workspace 对象，则直接使用
             self.workspace = workspace
+            # 配置的工作区根目录
             configured_root = workspace.root
         else:
+            # 如果工作区不是 Workspace 对象，则创建一个
             configured_root = workspace or os.environ.get("LOCAL_SHELL_WORKSPACE") or str(WORKSPACE_ROOT)
             self.workspace = Workspace(Path(configured_root))
 
+        # 配置的工作区根目录展开并解析
         self.root = Path(configured_root).expanduser().resolve()
 
-        # macOS 默认使用 UTF-8；仍允许环境变量显式覆盖。
+        # 配置的工作区根目录
+        # macOS 默认使用 UTF-8；Windows 默认跟随系统代码页，也允许显式覆盖。
         self.output_encoding = (
                 os.environ.get("LOCAL_SHELL_OUTPUT_ENCODING", "").strip()
-                or "utf-8"
+                or (locale.getpreferredencoding(False) if self.platform == "windows" else "utf-8")
         )
 
         # 工作区子目录规划
-        self.projects_dir = self.root / os.environ.get("LOCAL_SHELL_PROJECTS_DIR", "projects")
+
+        # 项目目录
+        self.projects_dir = _resolve_configured_subpath(
+            self.root,
+            os.environ.get("LOCAL_SHELL_PROJECTS_DIR", "projects"),
+            env_name="LOCAL_SHELL_PROJECTS_DIR",
+        )
         self.skills_dir = self.root / "skills"
         self.policies_dir = self.root / "policies"
         self.reviews_dir = self.root / "reviews"
@@ -130,11 +197,16 @@ class LocalShellBackend(BaseSandbox):
         self.tmp_dir = self.root / "tmp"
         self.logs_dir = self.root / "logs"
         self.secrets_dir = self.root / "secrets"  # 存放 Git askpass 脚本等敏感文件
-        self.shared_python_venv = self.root / os.environ.get(
-            "LOCAL_SHELL_SHARED_PYTHON_VENV",
-            "runtimes/python/default/.venv",
+        self.shared_python_venv = _resolve_configured_subpath(
+            self.root,
+            os.environ.get(
+                "LOCAL_SHELL_SHARED_PYTHON_VENV",
+                "runtimes/python/default/.venv",
+            ),
+            env_name="LOCAL_SHELL_SHARED_PYTHON_VENV",
         )
         self.default_timeout = timeout
+        self.read_only = read_only
         # 命令安全守卫默认开启；兼容曾经使用过的旧变量名。
         guard_value = os.environ.get(
             "LOCAL_SHELL_ENABLE_COMMAND_GUARD",
@@ -145,6 +217,13 @@ class LocalShellBackend(BaseSandbox):
         )
         self._venv_error: str | None = None
         self._ensure_layout()
+
+    @property
+    def id(self) -> str:
+        """返回不暴露真实工作区路径的稳定 Sandbox 标识。"""
+
+        root_digest = hashlib.sha256(os.fsencode(self.root)).hexdigest()[:16]
+        return f"local-shell-{root_digest}"
 
     # ── DeepAgents 命令协议 ────────────────────────────────────
     def execute(
@@ -165,17 +244,28 @@ class LocalShellBackend(BaseSandbox):
         模型可以根据 exit_code 和 output 继续修正命令或解释失败原因。
         """
 
+        if self.read_only and not self._read_only_command_allowed(command):
+            return ExecuteResponse(
+                output="当前任务是只读模式，该 Shell 命令不在允许列表中。",
+                exit_code=126,
+                truncated=False,
+            )
+
         # 第一层安全守卫：在命令改写之前检查原始输入。
         if self.command_guard_enabled:
             # 拦截危险命令
             denied = self._deny_reason(command)
             if denied:
                 return ExecuteResponse(output=f"命令被拒绝：{denied}", exit_code=126, truncated=False)
+            try:
+                command = normalize_safe_command(command)
+            except PermissionError as exc:
+                return ExecuteResponse(output=f"命令被拒绝：{exc}", exit_code=126, truncated=False)
 
         try:
             # 命令预处理也可能因为路径越界而失败，因此包含在结构化异常处理内。
             prepared_command = self._prepare_command(command)
-            # shell=True 在 macOS 上使用 /bin/sh。
+            # shell=True 在 macOS 上使用 /bin/sh，在 Windows 上使用 COMSPEC（通常为 cmd.exe）。
             completed = subprocess.run(
                 prepared_command,  # 最终执行的命令字符串，已经完成虚拟路径转换、Git 认证注入等预处理
                 cwd=self.projects_dir,  # 子进程工作目录，默认限制在 projects 目录下执行
@@ -186,7 +276,7 @@ class LocalShellBackend(BaseSandbox):
                 timeout=timeout or self.default_timeout,  # 单次命令执行超时时间，防止长时间阻塞 Agent 运行线程
                 env=self._execution_env(),  # 子进程环境变量，包含 PATH、虚拟环境、Git 非交互认证等配置
                 check=False,  # 不因非 0 退出码抛异常，保留 exit_code 交给 Agent 判断后续处理
-                shell=True,  # 通过 macOS 系统 shell 执行内置命令和 Git 命令
+                shell=True,  # 通过当前平台系统 shell 执行内置命令和 Git 命令
             )
 
             # 命令输出处理
@@ -210,7 +300,7 @@ class LocalShellBackend(BaseSandbox):
                 truncated=False,
             )
         # 命令异常处理
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Sandbox 协议要求异常转换为结构化响应
             # 协议要求：所有异常都要转成结构化结果，不能抛出去
             return ExecuteResponse(output=f"命令执行失败：{_mask_token(str(exc))}", exit_code=1, truncated=False)
 
@@ -220,6 +310,7 @@ class LocalShellBackend(BaseSandbox):
         列出虚拟路径下文件和目录。path:  /projects/test_ject/
         """
         try:
+            # 解析虚拟路径为实际路径
             resolved = self._resolve_virtual_path(path)
             if not resolved.exists():
                 return LsResult(entries=None, error=f"路径不存在：{path}")
@@ -248,7 +339,7 @@ class LocalShellBackend(BaseSandbox):
         避免因为一次编码异常中断整个 Agent 任务
         """
         try:
-            # 解析虚拟路径
+            # 解析虚拟路径为实际路径
             resolved = self._resolve_virtual_path(file_path)
             if not resolved.exists():
                 return ReadResult(error=f"文件不存在：{file_path}")
@@ -282,8 +373,10 @@ class LocalShellBackend(BaseSandbox):
     # 虚拟路径写入
     def write(self, file_path: str, content: str) -> WriteResult:
         """新建文件。如果文件已存在则报错（修改请用 edit）。"""
+        if self.read_only:
+            return WriteResult(error="当前任务是只读模式，禁止写入文件")
         try:
-            # 解析虚拟路径
+            # 解析虚拟路径为实际路径
             resolved = self._resolve_virtual_path(file_path)
             #  写入前检查
             denied = self._write_deny_reason(resolved)
@@ -306,10 +399,15 @@ class LocalShellBackend(BaseSandbox):
             replace_all: bool = False,
     ) -> EditResult:
         """替换文件中的文本 —— 相当于精细化的 find & replace。"""
+        if self.read_only:
+            return EditResult(error="当前任务是只读模式，禁止修改文件")
         try:
+            # 解析虚拟路径为实际路径
             resolved = self._resolve_virtual_path(file_path)
+            # 检查文件存在
             if not resolved.exists():
                 return EditResult(error=f"文件不存在：{file_path}")
+            # 检查文件是否为目录
             if resolved.is_dir():
                 return EditResult(error=f"当前路径是目录，不能修改为文件：{file_path}")
             denied = self._write_deny_reason(resolved)
@@ -331,10 +429,13 @@ class LocalShellBackend(BaseSandbox):
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """递归搜索匹配模式的文件路径（支持 fnmatch 通配符）。"""
         try:
+            # 解析虚拟路径为实际路径
             base = self._resolve_virtual_path(path or "/")
             matches = []
             for child in base.rglob("*"):
+                #  获取虚拟路径
                 virtual = self._to_virtual_path(child)
+                #  匹配模式
                 if fnmatch.fnmatch(virtual, pattern) or fnmatch.fnmatch(child.name, pattern):
                     matches.append(
                         {
@@ -352,13 +453,16 @@ class LocalShellBackend(BaseSandbox):
     def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
         """在文件中搜索关键词，返回匹配的行号和内容。"""
         try:
+            # 解析虚拟路径为实际路径
             base = self._resolve_virtual_path(path or VIRTUAL_PROJECTS)
+            # 获取文件列表
             files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
             matches = []
             for file in files:
                 if glob and not fnmatch.fnmatch(file.name, glob):
                     continue
                 try:
+                    # 读取文件内容并搜索关键词
                     for line_no, line in enumerate(file.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
                         if pattern in line:
                             matches.append({"path": self._to_virtual_path(file), "line": line_no, "text": line})
@@ -371,22 +475,29 @@ class LocalShellBackend(BaseSandbox):
     # 文件上传下载
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """批量上传文件（二进制内容直接写入）。"""
+        if self.read_only:
+            return [FileUploadResponse(path=path, error="read_only") for path, _ in files]
+
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:
+                # 解析虚拟路径为实际路径
                 resolved = self._resolve_virtual_path(path)
+                # 写入前检查
                 denied = self._write_deny_reason(resolved)
                 if denied:
                     responses.append(FileUploadResponse(path=path, error=denied))
                     continue
+                # 创建目录
                 resolved.parent.mkdir(parents=True, exist_ok=True)
+                # 写入文件内容
                 resolved.write_bytes(content)
                 responses.append(FileUploadResponse(path=path, error=None))
             except PermissionError:
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
             except IsADirectoryError:
                 responses.append(FileUploadResponse(path=path, error="is_directory"))
-            except Exception:
+            except (OSError, ValueError):
                 responses.append(FileUploadResponse(path=path, error="invalid_path"))
         return responses
 
@@ -396,16 +507,19 @@ class LocalShellBackend(BaseSandbox):
         responses: list[FileDownloadResponse] = []
         for path in paths:
             try:
+                # 解析虚拟路径为实际路径
                 resolved = self._resolve_virtual_path(path)
+                # 检查文件存在
                 if not resolved.exists():
                     responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                # 检查文件是否为目录
                 elif resolved.is_dir():
                     responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
                 else:
                     responses.append(FileDownloadResponse(path=path, content=resolved.read_bytes(), error=None))
             except PermissionError:
                 responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            except Exception:
+            except (OSError, ValueError):
                 responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
         return responses
 
@@ -423,11 +537,18 @@ class LocalShellBackend(BaseSandbox):
 
     def write_file(self, path: str, content: str) -> str:
         """写入文本文件（兼容旧工具，可新建也可覆盖）。"""
+        if self.read_only:
+            raise PermissionError("当前任务是只读模式，禁止写入文件")
+
+        # 解析虚拟路径
         virtual_path = self._normalize_compat_path(path)
+        # 解析虚拟路径为实际路径
         resolved = self._resolve_virtual_path(virtual_path)
+        # 检查写入权限
         denied = self._write_deny_reason(resolved)
         if denied:
             raise PermissionError(denied)
+        # 检查文件是否为目录
         if resolved.exists() and resolved.is_dir():
             raise IsADirectoryError(f"write_file 必须写入具体文件，当前路径是目录: {path}")
         resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -436,7 +557,10 @@ class LocalShellBackend(BaseSandbox):
 
     def list_files(self, path: str = ".") -> list[str]:
         """列出目录下一层内容（兼容旧工具，返回相对路径）。"""
+
+        # 解析虚拟路径
         virtual_path = self._normalize_compat_path(path)
+        # 解析虚拟路径为实际路径
         resolved = self._resolve_virtual_path(virtual_path)
         if not resolved.exists():
             return []
@@ -454,19 +578,24 @@ class LocalShellBackend(BaseSandbox):
 
         这是一层迁移适配，不建议新工具继续绕过 DeepAgents 原生协议调用它。
         """
+        if self.read_only:
+            raise PermissionError("当前任务是只读模式，禁止执行 Shell 命令")
+
+        # 准备执行命令
         cwd_path, command_text = self._prepare_run_command(command, cwd)
         logger.info("执行命令：cwd=%s command=%s timeout=%s", cwd_path, _mask_token(command_text), timeout)
+        # 执行命令
         completed = subprocess.run(
             command_text,
             cwd=str(cwd_path),
             shell=True,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
             encoding=self.output_encoding,
             errors="replace",
             env=self._execution_env(),
+            check=False,
         )
         logger.info(
             "命令结束：exit_code=%s command=%s stdout_bytes=%s stderr_bytes=%s",
@@ -520,6 +649,7 @@ class LocalShellBackend(BaseSandbox):
         # 写一个 .ai_coding_workspace.json 标记文件，方便外部工具识别工作区
         state = {
             "backend": "local_shell",
+            "platform": self.platform,
             "root": str(self.root),
             "updated_at": datetime.now(UTC).isoformat(),
             "virtual_dirs": [
@@ -558,14 +688,19 @@ class LocalShellBackend(BaseSandbox):
                 path.write_text(content, encoding="utf-8")
 
     def _ensure_shared_python_venv(self) -> None:
-        """创建 macOS 共享 Python 虚拟环境。
+        """创建当前平台的共享 Python 虚拟环境。
 
-        检查 `.venv/bin/python` 是否存在。
+        macOS 检查 `.venv/bin/python`，Windows 检查 `.venv/Scripts/python.exe`。
         创建功能由 LOCAL_SHELL_CREATE_PYTHON_VENV 控制，默认关闭。
         """
         if self._venv_python_path().exists():
             return
-        python = shutil.which("python3") or shutil.which("python")
+        python_names = (
+            ("py", "python", "python3")
+            if self.platform == "windows"
+            else ("python3", "python")
+        )
+        python = next((path for name in python_names if (path := shutil.which(name))), None)
         if not python:
             self._venv_error = "python executable not found on PATH"
             return
@@ -580,7 +715,7 @@ class LocalShellBackend(BaseSandbox):
                 timeout=300,
                 check=False,
             )
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             self._venv_error = str(exc)
             return
         if completed.returncode != 0:
@@ -599,30 +734,45 @@ class LocalShellBackend(BaseSandbox):
         - Git 命令仍然可以走标准 HTTPS 认证流程；
         - 后端可以统一通过 `_execution_env()` 注入认证环境变量。
         """
-        sh = self.secrets_dir / "github_askpass.sh"
-        if not sh.exists():
-            sh.write_text(
-                "#!/bin/sh\n"
-                "case \"$1\" in\n"
-                "  *[Uu]sername*) printf '%s' \"$GITHUB_ASKPASS_USERNAME\" ;;\n"
-                "  *) printf '%s' \"$GITHUB_ASKPASS_TOKEN\" ;;\n"
-                "esac\n",
+        askpass = self._askpass_path()
+        if askpass.exists():
+            return
+        if self.platform == "windows":
+            askpass.write_text(
+                "@echo off\n"
+                "echo %~1 | %SystemRoot%\\System32\\findstr.exe /I \"Username\" >nul\n"
+                "if not errorlevel 1 (\n"
+                "  echo %GITHUB_ASKPASS_USERNAME%\n"
+                ") else (\n"
+                "  echo %GITHUB_ASKPASS_TOKEN%\n"
+                ")\n",
                 encoding="utf-8",
-                newline="\n",
+                newline="\r\n",
             )
-        sh.chmod(0o700)
+            return
+        askpass.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  *[Uu]sername*) printf '%s' \"$GITHUB_ASKPASS_USERNAME\" ;;\n"
+            "  *) printf '%s' \"$GITHUB_ASKPASS_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        askpass.chmod(0o700)
 
     def _venv_bin_dir(self) -> Path:
-        """返回 macOS 虚拟环境的可执行文件目录。"""
-        return self.shared_python_venv / "bin"
+        """返回当前平台虚拟环境的可执行文件目录。"""
+        return self.shared_python_venv / ("Scripts" if self.platform == "windows" else "bin")
 
     def _venv_python_path(self) -> Path:
-        """返回 macOS 虚拟环境的 Python 可执行文件。"""
-        return self._venv_bin_dir() / "python"
+        """返回当前平台虚拟环境的 Python 可执行文件。"""
+        return self._venv_bin_dir() / ("python.exe" if self.platform == "windows" else "python")
 
     def _askpass_path(self) -> Path:
-        """返回 macOS 可执行的 Git AskPass 脚本。"""
-        return self.secrets_dir / "github_askpass.sh"
+        """返回当前平台可执行的 Git AskPass 脚本。"""
+        suffix = ".cmd" if self.platform == "windows" else ".sh"
+        return self.secrets_dir / f"github_askpass{suffix}"
 
     # ── 路径处理 ──────────────────────────────────────────────
 
@@ -635,6 +785,9 @@ class LocalShellBackend(BaseSandbox):
         raw = str(path).strip()
         if raw in {"", "."}:
             return "/"
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute():
+            return self._to_virtual_path(candidate)
         if raw.startswith("/"):
             return raw
         return "/" + raw
@@ -646,7 +799,7 @@ class LocalShellBackend(BaseSandbox):
         并确认它仍然位于 `self.root` 工作区内。
         """
         raw = str(path).strip() or "/"
-        normalized = raw[1:] if raw.startswith("/") else raw
+        normalized = raw.removeprefix("/")
         resolved = (self.root / normalized).resolve()
         # 安全检查：必须落在工作区范围内
         if not self._is_under_root(resolved):
@@ -723,21 +876,62 @@ class LocalShellBackend(BaseSandbox):
         两层校验的分工是： 本函数做场景拒绝， 'normalize_safe_command()' 做命令白名单和语法收敛。
         """
         lowered = command.lower()
-        if "../" in command:
+        if "../" in command or "..\\" in command:
             return "path traversal outside workspace is denied"
         for pattern in _DANGEROUS_PATTERNS:
             if re.search(pattern, lowered):
                 return f"dangerous command pattern matched: {pattern}"
         # 虚拟路径会在下一阶段映射到工作区，可以放行；其他绝对路径必须校验。
-        virtual_roots = tuple(f"/{name}" for name in _VIRTUAL_ROOT_NAMES)
         for match in _POSIX_PATH_RE.finditer(command):
             raw_path = match.group(1)
-            if raw_path.startswith(virtual_roots):
+            if any(
+                    raw_path == f"/{name}" or raw_path.startswith(f"/{name}/")
+                    for name in _VIRTUAL_ROOT_NAMES
+            ):
                 continue
             candidate = Path(raw_path).expanduser().resolve()
             if not self._is_under_root(candidate):
                 return f"absolute path outside workspace: {candidate}"
+        for match in _WINDOWS_PATH_RE.finditer(command):
+            candidate = Path(match.group(1)).expanduser().resolve()
+            if not self._is_under_root(candidate):
+                return f"absolute path outside workspace: {candidate}"
         return None
+
+    @staticmethod
+    def _read_only_command_allowed(command: str) -> bool:
+        """只读任务仅允许查看命令和仓库准备命令。
+
+        clone/fetch/pull 会改变 Sandbox 中的仓库副本，但不会修改业务源码内容；
+        它们是完成代码审查前同步远端状态所必需的准备动作。文件写入接口仍由
+        read_only 单独禁止，因此不能借此编辑项目文件。
+        """
+
+        words = command.strip().lower().split()
+        if not words:
+            return False
+        if words[0] in {"ls", "cat", "pwd", "which", "dir", "type", "where"}:
+            return True
+        if len(words) < 2 or words[0] not in {"git", "git.exe"}:
+            return False
+        subcommand = words[1]
+        if subcommand in {
+            "clone",
+            "diff",
+            "fetch",
+            "log",
+            "ls-files",
+            "pull",
+            "rev-parse",
+            "show",
+            "status",
+        }:
+            return True
+        if subcommand == "branch":
+            return not any(flag in words[2:] for flag in ("-d", "-m"))
+        if subcommand == "remote":
+            return len(words) == 2 or words[2] in {"-v", "get-url"}
+        return False
 
     # ── 命令预处理 ───────────────────────────────────────────
 
@@ -768,7 +962,7 @@ class LocalShellBackend(BaseSandbox):
         else:
             return command
 
-        askpass = str(self._askpass_path())
+        askpass = self._askpass_path().as_posix()
         return f'{leading}git -c credential.helper= -c core.askPass="{askpass}" {rest}'.rstrip()
 
     def _prepare_run_command(self, command: str, cwd: str) -> tuple[Path, str]:
@@ -825,9 +1019,9 @@ class LocalShellBackend(BaseSandbox):
         构造子进程环境变量：注入 venv、Git 安全配置、GitHub 认证信息。
 
         统一处理以下内容：
-        1. 将共享 Python venv 的 `bin` 目录放到 PATH 最前面；
+        1. 将共享 Python venv 的可执行目录放到 PATH 最前面；
         2. 禁止 Git 弹出交互式认证窗口；
-        3. 通过 macOS 的 GIT_ASKPASS 脚本注入 GitHub token。
+        3. 通过当前平台的 GIT_ASKPASS 脚本注入 GitHub token。
 
         token 只存在于子进程环境变量中，不会拼接到命令文本或日志里。
         """
@@ -841,9 +1035,9 @@ class LocalShellBackend(BaseSandbox):
         # 禁止 Git 交互式弹窗，出错直接返回
         env["GIT_TERMINAL_PROMPT"] = "0"
         github_token = (
-            get_env("GITHUB_TOKEN").strip()
-            or get_env("GH_TOKEN").strip()
-            or get_env("SCM_GITHUB_TOKEN").strip()
+                get_env("GITHUB_TOKEN").strip()
+                or get_env("GH_TOKEN").strip()
+                or get_env("SCM_GITHUB_TOKEN").strip()
         )
         if github_token:
             env["GIT_ASKPASS"] = str(self._askpass_path())
