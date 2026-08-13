@@ -7,7 +7,12 @@ from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
-from agent.store.repo_memory import get_repo_memory_store, repo_memory_virtual_path
+from agent.core.graph import get_langgraph_store
+from agent.store.repo_memory import (
+    build_repo_memory_namespace,
+    repo_memory_store_key,
+    repo_memory_virtual_path,
+)
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 """仓库级上下文注入中间件。
@@ -44,7 +49,7 @@ def _repo_url_and_content_from_config() -> tuple[str | None, str | None]:
     必须通过 langgraph.config.get_config() 才能访问 RunnableConfig。
 
     返回值：
-    - repo_url：当前任务绑定的 Gitee 仓库地址。
+    - repo_url：当前任务绑定的 GitHub 仓库地址。
     - memory_content：runtime.py 预先读取并放入 configurable 的仓库记忆内容。
 
     为什么优先读取 `_repo_memory_content`：
