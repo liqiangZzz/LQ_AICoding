@@ -86,7 +86,7 @@ def _html_to_markdown(content: str) -> str:
         from markdownify import markdownify  # type: ignore
 
         return str(markdownify(content)).strip()
-    except Exception:
+    except Exception:  # noqa: BLE001 - 可选解析器失败时必须回退标准库
         # 任何导入或转换异常都降级到标准库解析，保证工具可用性。
         parser = _TextExtractor()
         parser.feed(content)
@@ -131,7 +131,7 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             normalized_url,
             # 限制超时时间范围，避免模型传入过大数值导致任务长期阻塞。
             timeout=max(1, min(int(timeout), 60)),
-            headers={"User-Agent": "LX-AICODING/1.0"},
+            headers={"User-Agent": "LQ-AICODING/1.0"},
         )
         if blocked:
             # 安全策略拒绝访问时，safe_http 会返回统一错误结构。

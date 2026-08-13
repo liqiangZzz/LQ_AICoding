@@ -3,8 +3,10 @@
 本模块负责读取访问令牌、创建 Pull Request、发布 PR 评论，以及在重复创建时
 查找并复用已有 PR。上层 LangChain/DeepAgents 工具定义在 `github_tools.py` 中。
 """
+import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -19,12 +21,42 @@ class GitHubRepo:
     clone_url: str
 
 
+def parse_github_repo_url(repo_url: str) -> GitHubRepo:
+    """
+    解析 GitHub 仓库地址，返回标准化的仓库信息。
+
+    Args:
+        repo_url: 用户输入或任务配置中的 GitHub 仓库地址，支持带 `.git` 后缀的 HTTPS 地址。
+
+    Returns:
+        标准化后的 `GitHubRepo`。
+
+    Raises:
+        ValueError: URL 不是 github.com 域名，或路径中无法解析出 owner/repo。
+    """
+
+    parsed = urlparse(repo_url.strip())
+    hostname = (parsed.hostname or "").lower()
+
+    if hostname not in ("github.com", "www.github.com"):
+        raise ValueError("当前仅支持 github.com 仓库地址")
+
+    parts = [p for p in parsed.path.strip("/").split("/") if p]
+    if len(parts) < 2:
+        raise ValueError(f"无法解析 GitHub 仓库地址: {repo_url}")
+
+    owner = parts[0]
+    # 统一去掉 `.git` 后缀，API 路径使用纯 repo 名，clone_url 再补回标准后缀。
+    repo = re.sub(r"\.git$", "", parts[1])
+    return GitHubRepo(owner=owner, repo=repo, clone_url=f"https://github.com/{owner}/{repo}.git")
+
+
 def get_github_token() -> str:
     """读取 GitHub 访问令牌。"""
     token = (
-        get_env("GITHUB_TOKEN").strip()
-        or get_env("GH_TOKEN").strip()
-        or get_env("SCM_GITHUB_TOKEN").strip()
+            get_env("GITHUB_TOKEN").strip()
+            or get_env("GH_TOKEN").strip()
+            or get_env("SCM_GITHUB_TOKEN").strip()
     )
     if not token:
         raise RuntimeError(

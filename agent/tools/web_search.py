@@ -116,7 +116,7 @@ def web_search(query: str) -> str:
                 ),
             )
         return output
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 外部 SDK 错误统一转换为工具结果
         # 外部 API 错误、网络异常、SDK 异常都返回可读文本，让模型可以继续降级处理。
         error = mask_token(str(exc))
         logger.warning("联网搜索失败：query=%s error=%s", normalized_query, error)

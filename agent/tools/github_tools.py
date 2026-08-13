@@ -2,9 +2,9 @@ import logging
 from typing import Any
 
 from langchain_core.tools import tool
-from langgraph.config import get_store
 
 from agent.core.events import record_event
+from agent.core.graph import get_store
 from agent.tools.github_api import create_pull_request, post_pr_comment
 from agent.tools.runtime_context import get_runtime_thread_id, runtime_is_read_only_task
 
