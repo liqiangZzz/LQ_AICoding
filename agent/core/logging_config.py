@@ -37,7 +37,7 @@ def _configure_console_encoding() -> None:
 
         try:
             reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
+        except (OSError, ValueError):
             # 控制台编码修正只是展示优化，不能因为它失败而影响服务启动。
             pass
 
@@ -59,7 +59,7 @@ def _close_and_remove_handlers(logger: logging.Logger) -> None:
         logger.removeHandler(handler)
         try:
             handler.close()
-        except Exception:
+        except OSError:
             continue
 
 
@@ -139,8 +139,7 @@ def configure_logging() -> None:
 def read_recent_log(path: Path, max_lines: int = 200) -> list[str]:
     """读取日志文件末尾若干行，供 API 页面或前端展示。"""
 
-    if max_lines < 1:
-        max_lines = 1
+    max_lines = max(max_lines, 1)
     if not path.exists():
         return []
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()

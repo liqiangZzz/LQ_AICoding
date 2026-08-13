@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from dotenv import dotenv_values
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]  # 项目根目录
 LOCAL_ENV = PROJECT_ROOT / ".env"
+
+_PLATFORM_PATH_ENV_NAMES = (
+    "AI_WORKSPACE_ROOT",
+    "LQ_AICODING_DATA_DIR",
+    "CHECKPOINT_DB_PATH",
+    "STORE_DB_PATH",
+    "LQ_AICODING_LOG_DIR",
+    "LOCAL_SHELL_WORKSPACE",
+)
 
 # ── 内部加载逻辑 ──────────────────────────────────────────────
 def _load_non_empty_env(path: Path, *, override: bool) -> None:
@@ -32,14 +42,51 @@ def _load_non_empty_env(path: Path, *, override: bool) -> None:
             os.environ[key] = value
 
 
+def _active_platform_profile() -> str:
+    """返回平台配置后缀，避免在环境加载层反向依赖 platform_utils。"""
+
+    configured = os.environ.get("LOCAL_SHELL_PLATFORM", "auto").strip().lower() or "auto"
+    if configured == "auto":
+        return "WINDOWS" if os.name == "nt" or sys.platform == "win32" else "MACOS"
+    aliases = {
+        "mac": "MACOS",
+        "macos": "MACOS",
+        "darwin": "MACOS",
+        "win": "WINDOWS",
+        "win32": "WINDOWS",
+        "windows": "WINDOWS",
+    }
+    return aliases.get(configured, configured.upper())
+
+
+def _apply_platform_path_profile(path: Path) -> None:
+    """把当前平台的 ``*_MACOS`` / ``*_WINDOWS`` 路径映射到通用变量。"""
+
+    if not path.exists():
+        return
+    values = dotenv_values(path)
+    profile = _active_platform_profile()
+    for name in _PLATFORM_PATH_ENV_NAMES:
+        profile_name = f"{name}_{profile}"
+        if profile_name not in values:
+            continue
+        value = values[profile_name]
+        if value is None or value.strip() == "":
+            # 空平台值不覆盖通用值；两者都为空时 settings.py 会使用默认路径。
+            continue
+        os.environ[name] = value
+
+
 def load_environment() -> None:
     r"""加载课程项目运行需要的环境变量。
 
     加载顺序：
     1. 加载 `.env` 中的非空配置；
-    2. 补充 tracing 默认值。
+    2. 按 `LOCAL_SHELL_PLATFORM` 应用 macOS / Windows 路径配置；
+    3. 补充 tracing 默认值。
     """
     _load_non_empty_env(LOCAL_ENV, override=True)
+    _apply_platform_path_profile(LOCAL_ENV)
     # 课程版默认关闭 LangSmith/LangChain tracing。
     # 这样学生启动项目时不需要额外配置 LangSmith，也不会把运行数据发到外部观测平台。
     os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")

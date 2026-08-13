@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from agent.env_utils import get_env
@@ -13,14 +13,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # SQLite 数据目录：默认使用项目内 data/。
 # 用户仍然可以通过 .env 覆盖，但课程版推荐显式落在项目目录中，
 # 方便讲课时直接打开 SQLite 文件观察 checkpoint 和业务 Store 的区别。
-DATA_DIR = Path(get_env("LQ_AICODING_DATA_DIR", str(PROJECT_ROOT / "data"))).resolve()
-CHECKPOINT_DB_PATH = Path(get_env("CHECKPOINT_DB_PATH", str(DATA_DIR / "checkpoints.sqlite"))).resolve()
-STORE_DB_PATH = Path(get_env("STORE_DB_PATH", str(DATA_DIR / "store.sqlite"))).resolve()
+DATA_DIR = Path(get_env("LQ_AICODING_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser().resolve()
+CHECKPOINT_DB_PATH = Path(
+    get_env("CHECKPOINT_DB_PATH", str(DATA_DIR / "checkpoints.sqlite"))
+).expanduser().resolve()
+STORE_DB_PATH = Path(get_env("STORE_DB_PATH", str(DATA_DIR / "store.sqlite"))).expanduser().resolve()
+LANGGRAPH_STORE_DB_PATH = Path(
+    get_env("LANGGRAPH_STORE_DB_PATH", str(DATA_DIR / "langgraph_store.sqlite"))
+).expanduser().resolve()
 
 # ── 日志与轮转 ────────────────────────────────────────────────
 # 日志目录：所有后端日志和 Agent 运行日志都写入项目内 logs/。
 # 这样既能在控制台实时看，也能在课后通过日志文件复盘 Agent 做了什么。
-LOG_DIR = Path(get_env("LQ_AICODING_LOG_DIR", str(PROJECT_ROOT / "logs"))).resolve()
+LOG_DIR = Path(get_env("LQ_AICODING_LOG_DIR", str(PROJECT_ROOT / "logs"))).expanduser().resolve()
 LOG_LEVEL = get_env("LQ_AICODING_LOG_LEVEL", "INFO").upper()
 LOG_ROTATION_WHEN = get_env("LQ_AICODING_LOG_WHEN", "midnight")
 LOG_ROTATION_INTERVAL = int(get_env("LQ_AICODING_LOG_INTERVAL", "1"))
@@ -35,7 +40,7 @@ def log_date_text(target_date: date | None = None) -> str:
     历史文件默认追加 YYYY-MM-DD 后缀，例如 backend.log.2026-07-10。
     这个函数保留给日志 API 读取历史日期时使用。
     """
-    return (target_date or date.today()).isoformat()
+    return (target_date or datetime.now().astimezone().date()).isoformat()
 
 
 def backend_log_path(target_date: date | None = None) -> Path:
@@ -66,9 +71,11 @@ AGENT_LOG_PATH = agent_log_path()
 # ── Agent 工作区 ──────────────────────────────────────────────
 # Agent 操作真实代码仓库时使用的工作区，不放在课程项目源码目录中，
 # 避免 Agent 误改课程项目本身。可通过 AI_WORKSPACE_ROOT 覆盖默认路径。
-WORKSPACE_ROOT = Path(get_env("AI_WORKSPACE_ROOT", str(Path.home() / "ai_workspace")))
-PROJECTS_DIR = WORKSPACE_ROOT / 'projects'
+WORKSPACE_ROOT = Path(
+    get_env("AI_WORKSPACE_ROOT", str(Path.home() / "ai_workspace"))
+).expanduser()
+PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 
 # DeepAgents skills 目录统一放在所选平台的工作区 skills 子目录中。
 # 这样可以通过 DeepAgents 原生 backend route 暴露 '/skills'。
-SKILLS_DIR = WORKSPACE_ROOT / 'skills'
+SKILLS_DIR = WORKSPACE_ROOT / "skills"

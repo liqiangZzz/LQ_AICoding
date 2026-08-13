@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
+from agent.api.routes import router
 from agent.core.logging_config import configure_logging
-from agent.env_utils import load_environment
+from agent.env_utils import get_env, load_environment
 
 # ---------------------------------------------------------------
 # 启动前置初始化
@@ -26,13 +27,19 @@ app = FastAPI(title='我的AI Coding项目', version='0.1.1')
 #   - 127.0.0.1:5173 / localhost:5173  （常见 Vite 开发端口）
 # 生产环境中应替换为实际的前端域名。
 # ---------------------------------------------------------------
+_default_origins = "http://127.0.0.1:3000,http://localhost:3000"
+_allowed_origins = [
+    origin.strip()
+    for origin in get_env("DASHBOARD_ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-    ],
+    allow_origins=_allowed_origins or _default_origins.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(router)

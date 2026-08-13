@@ -1,8 +1,7 @@
 import logging
 
-from agent.core.settings import STORE_DB_PATH
+from agent.store import LocalSqliteStore, get_local_store
 
-_event_store: LocalSqliteStore | None = None
 logger = logging.getLogger("agent.run.events")
 
 
@@ -11,11 +10,7 @@ def _get_event_store() -> LocalSqliteStore:
 
     避免从这里倒入 graph.get_store,否则会形成 runtime/graph/tools 的循环导入。
     """
-    global _event_store
-    if _event_store is None:
-        _event_store = LocalSqliteStore(STORE_DB_PATH)
-
-    return _event_store
+    return get_local_store()
 
 
 def record_event(
@@ -42,9 +37,8 @@ def record_event(
         _get_event_store().add_run_event(
             event_id=f"{thread_id}:{key}",
             thread_id=thread_id,
-            key=key,
-            title=title,
             kind=kind,
+            title=title,
             status=status,
             detail=detail,
         )
