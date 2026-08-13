@@ -1,15 +1,36 @@
 [project]
-name = "lx-aicoding-course"
+name = "lq-aicoding-course"
 version = "0.1.0"
-description = "LX-AICODING course backend"
-requires-python = ">=3.14"
+description = "LQ-AICODING course backend"
+requires-python = ">=3.11"
 dependencies = [
   "deepagents>=0.6.11",
   "fastapi>=0.138.0",
-  "uvicorn>=0.49.0",
+  "httpx>=0.28.0",
+  "langchain>=1.2.0",
+  "langchain-core>=1.2.0",
   "langchain-openai>=1.3.2",
+  "langgraph>=1.0.0",
   "langgraph-checkpoint-sqlite>=3.1.0",
+  "pydantic>=2.12.0",
   "python-dotenv>=1.2.2",
   "requests>=2.32.0",
+  "starlette",
+  "typing-extensions>=4.12.0",
+  "urllib3>=2.2.0",
+  "uvicorn>=0.49.0",
   "zhipuai>=2.1.5",
 ]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.9.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]

@@ -2,7 +2,7 @@
 
 一个面向 AI Coding 场景的 Python 后端基础项目，目标是让 AI Agent 在受控工作区内完成代码读取、修改、验证和 GitHub 协作，同时为联网检索、代码审查记录、运行事件与日志追踪提供统一基础设施。
 
-> **运行平台：本项目仅面向 macOS 环境开发和维护。** 代码、Shell 命令、文件路径、Python 虚拟环境及 Git AskPass 均按 macOS 约定实现，不提供 Windows 或 Linux 兼容支持。
+> **运行平台：支持 macOS 和 Windows。** 默认通过 `LOCAL_SHELL_PLATFORM=auto` 自动识别，也可在对应宿主机上显式选择 `macos` 或 `windows`。
 >
 > 当前项目处于持续开发阶段，仓库主要包含后端基础能力和工具层实现，尚未提供完整前端界面、稳定版业务 API 与依赖锁定文件。
 
@@ -12,7 +12,7 @@
 
 - 将 Agent 的文件操作限制在指定工作区内；
 - 对可执行命令进行白名单和危险操作检查；
-- 为 macOS 提供统一的本地路径和命令执行环境；
+- 为 macOS 和 Windows 提供统一的本地路径和命令执行环境；
 - 使用 GitHub 完成分支推送、Pull Request 创建与评论；
 - 隔离并脱敏 GitHub Token、模型 API Key 等敏感信息；
 - 记录 Agent 执行事件、代码审查发现和运行日志；
@@ -28,7 +28,7 @@
 - `/projects`、`/skills`、`/policies` 等虚拟路径映射；
 - 工作区边界校验，阻止路径穿越和越界访问；
 - 命令白名单、危险命令拦截和 Shell 操作符限制；
-- macOS 命令、路径和 Python 虚拟环境支持；
+- macOS / Windows 命令、路径和 Python 虚拟环境支持；
 - 命令超时、输出截断和敏感 Token 脱敏。
 
 ### 2. GitHub 协作
@@ -78,7 +78,7 @@ git@github.com:liqiangZzz/LQ_AICoding.git
 ### 6. 日志与配置
 
 - 使用 `.env` 管理本地配置；
-- 使用简洁的 macOS 路径配置；
+- 使用可自动切换的 macOS / Windows 路径配置；
 - 后端日志与 Agent 运行日志分离；
 - 使用 `TimedRotatingFileHandler` 按时间轮转日志；
 - 支持日志级别、轮转周期和保留天数配置。
@@ -130,9 +130,9 @@ LQ_AICoding/
 └── README.md
 ```
 
-## 环境要求（仅 macOS）
+## 环境要求
 
-- **操作系统：macOS（唯一支持的平台）**；
+- **操作系统：macOS 或 Windows**；
 - Python 3.11 或更高版本；
 - Git；
 - 推荐配置 GitHub SSH Key；
@@ -155,31 +155,42 @@ git clone https://github.com/liqiangZzz/LQ_AICoding.git
 cd LQ_AICoding
 ```
 
-### 2. 创建虚拟环境
+### 2. 激活 Conda 环境
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+conda activate deepagents-env-ai-coding
+python -c "import sys; print(sys.executable)"
 ```
 
-### 3. 安装基础依赖
+输出应指向 Conda 环境下的 Python，不应指向项目内的 `.venv`。如果终端前缀同时出现 `(.venv)`，先执行 `deactivate`，再重新激活 Conda 环境。
 
-当前仓库尚未提供锁定版本的依赖文件。根据现有代码，开发环境至少需要：
+如果尚未创建该环境，macOS 和 Windows 都可执行：
 
 ```bash
-pip install fastapi uvicorn python-dotenv httpx requests \
-  langchain-core langgraph deepagents typing-extensions zhipuai
+conda create -n deepagents-env-ai-coding python=3.13 -y
+conda activate deepagents-env-ai-coding
 ```
 
-后续建议补充 `pyproject.toml` 和锁文件，确保不同环境使用一致的依赖版本。
+### 3. 安装依赖
+
+`pyproject.toml` 已声明运行依赖和开发检查依赖。在上述 Conda 环境中执行：
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+如果只运行服务、不需要 pytest 和 Ruff，可以执行：
+
+```bash
+python -m pip install -e .
+```
 
 ### 4. 创建本地配置
 
-```bash
-cp .env.example .env
-```
+macOS：`cp .env.example .env`；Windows PowerShell：`Copy-Item .env.example .env`。
 
-根据本机目录和实际使用的服务编辑 `.env`。不要将 `.env` 提交到 GitHub。
+根据本机目录和实际使用的服务编辑 `.env`。通常保留 `LOCAL_SHELL_PLATFORM=auto` 即可；需要显式选择时填写与当前宿主机一致的 `macos` 或 `windows`。该配置用于同一套代码在两类系统间切换，不模拟另一种操作系统。不要将 `.env` 提交到 GitHub。
 
 ### 5. 启动服务
 
@@ -192,7 +203,7 @@ uvicorn agent.app:app --host 127.0.0.1 --port 8000 --reload
 - OpenAPI 页面：`http://127.0.0.1:8000/docs`
 - ReDoc 页面：`http://127.0.0.1:8000/redoc`
 
-当前 FastAPI 入口主要完成环境变量、日志系统和 CORS 初始化，具体业务路由仍在后续开发中。
+当前 FastAPI 已提供健康检查、任务创建/查询和日志查询路由，并接入 DeepAgent 运行时。
 
 ## 关键环境变量
 
@@ -213,20 +224,35 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 
 ### 模型与搜索
 
-| 变量 | 说明 |
-|---|---|
-| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型配置 |
-| `GLM_API_KEY` / `GLM_BASE_URL` | 智谱 GLM 模型配置 |
-| `QWEN_API_KEY` / `QWEN_BASE_URL` | 通义千问模型配置 |
+| 变量 | 说明               |
+|---|------------------|
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型配置    |
+| `GLM_API_KEY` / `GLM_BASE_URL` | 智谱 GLM 模型配置      |
+| `KIMI_API_KEY` / `KIMI_BASE_URL` | KImi 模型配置        |
 | `ZHIPU_API_KEY` | 智谱 Web Search 配置 |
 
 ### 工作区
 
 | 变量 | 说明 |
 |---|---|
-| `AI_WORKSPACE_ROOT` | macOS Agent 工作区根目录 |
-| `LOCAL_SHELL_WORKSPACE` | macOS 本地 Shell 工作区 |
+| `LOCAL_SHELL_PLATFORM` | `auto`、`macos` 或 `windows`，默认自动识别宿主机 |
+| `AI_WORKSPACE_ROOT` | Agent 工作区根目录；默认 `~/ai_workspace` |
+| `LOCAL_SHELL_WORKSPACE` | 本地 Shell 工作区；默认继承 `AI_WORKSPACE_ROOT` |
+| `*_MACOS` / `*_WINDOWS` | 对应路径变量的平台专用值；当前平台的值会覆盖通用值，留空则沿用通用值，两者都为空时使用代码默认值 |
+| `LOCAL_SHELL_SHARED_PYTHON_VENV` | 工作区内共享 venv 相对路径 |
 | `LOCAL_SHELL_ENABLE_COMMAND_GUARD` | 是否启用命令安全守卫 |
+
+### 沙箱
+
+当前版本只支持 `LocalShellBackend`。它直接在本机受控工作区中执行命令，macOS 使用 `/bin/sh`，Windows 使用 `cmd.exe`，不需要启动 localhost OpenSandbox 服务。
+
+| 变量 | 说明 |
+|---|---|
+| `SANDBOX_TYPE` | 当前固定为 `local_shell`；其他值会在后端初始化时被拒绝 |
+| `LOCAL_SHELL_PROJECTS_DIR` | 工作区内的项目子目录，默认 `projects` |
+| `LOCAL_SHELL_OUTPUT_ENCODING` | 子进程输出编码；留空时根据当前系统自动选择 |
+
+远程 Sandbox 相关变量尚未接入，因此 `.env` 和 `.env.example` 中不需要配置 `SANDBOX_DOMAIN`、`OPENSANDBOX_API_KEY` 等参数。
 
 ### 数据与日志
 
@@ -266,7 +292,7 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 python -m compileall -q agent
 ```
 
-项目补齐测试和依赖配置后，建议加入：
+然后执行单元测试和静态检查：
 
 ```bash
 pytest
@@ -283,15 +309,14 @@ ruff check .
 - 本地受控 Shell 与虚拟工作区；
 - GitHub PR 和评论工具；
 - 安全网页读取与联网搜索；
-- 代码审查发现与运行事件基础能力。
+- 代码审查发现与运行事件基础能力；
+- Agent 工厂、SQLite checkpoint、仓库映射和长期记忆。
 
 待完善：
 
-- 完整的业务 API 路由；
-- Agent/Graph 组装与服务调用链；
-- Store 的完整实现和初始化；
-- 自动化测试；
-- `pyproject.toml`、依赖版本锁定和标准构建流程；
+- Dashboard 认证、SSE 实时文本流和更完整的任务管理 API；
+- 生产级数据库与 checkpoint 生命周期集成；
+- 依赖版本锁定和 CI 检查流程；
 - 前端 Dashboard 与部署文档。
 
 ## License

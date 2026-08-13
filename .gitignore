@@ -7,6 +7,7 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
 .venv/
 venv/
 
@@ -20,3 +21,9 @@ data/
 logs/
 *.sqlite
 *.sqlite3
+
+# UI 构建文件
+ui/node_modules/
+ui/.tanstack/tmp/
+ui/tsconfig.tsbuildinfo
+ui/.output/
