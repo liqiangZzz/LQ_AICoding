@@ -12,9 +12,8 @@ INTENT_MODEL_MAX_TOKENS = 200
 def make_main_model() -> BaseChatModel:
     """创建编码智能体使用的 DeepSeek 模型。
 
-    课程版只保留一个主模型，默认对齐 open-swe 使用的 `deepseek-v4-pro`。
-    这里不引入多模型 profile、fallback、路由器等生产级能力，
-    让学生先理解“模型配置”和“Agent 编排”之间的关系。
+    当前只保留一个主模型，默认使用 `deepseek-v4-pro`。
+    这里不引入多模型 profile、fallback 或路由器，保持运行链路明确。
 
     `thinking: disabled` 与 open-swe 的 DeepSeek 调用方式保持一致，
     避免模型输出额外思考内容影响工具调用和最终回复。
@@ -25,7 +24,7 @@ def make_main_model() -> BaseChatModel:
     `ChatOpenAI` 的稳定行为，又便于后续把模型供应商抽象成配置。
     """
     return init_chat_model(
-        model=get_env("MAIN_MODEL", "deepseek-v4-pro"), #  默认使用 deepseek-v4-pro
+        model=get_env("MAIN_MODEL", "deepseek-v4-pro"),  # 默认使用 deepseek-v4-pro
         model_provider="openai",
         temperature=1.1,
         api_key=require_env("DEEPSEEK_API_KEY"),

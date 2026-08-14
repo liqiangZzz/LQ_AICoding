@@ -1,11 +1,11 @@
-""" Agent 单论运行保护阈值。
+"""Agent 单轮运行保护阈值。
 
 长任务运行时需要防止两类问题：
 1. 模型不断调用工具，导致费用和耗时失控
 2. 某些任务卡在长时间等待或重复循环，无法及时返回
 
-本模块提供轻量级运行限制，按任务类型配置最大工具调用次数和最大运行描述。
-他不依赖具体哦行供应商，也不解析完整 token 计费信息，只基于 LangGraph 事件流做稳定的运行保护。
+本模块按任务类型配置最大工具调用次数和最大运行时长。
+它不依赖具体模型供应商，也不解析完整 token 计费信息，只基于 LangGraph 事件流做运行保护。
 """
 import time
 from dataclasses import dataclass
@@ -33,7 +33,7 @@ DEFAULT_MAX_SECONDS = 1800
 
 
 class AgentRunLimitExceeded(RuntimeError):
-    """ Agent 本轮运行超过保护上线
+    """Agent 本轮运行超过保护上限。
 
     runtime 捕获该异常后应停止继续消费事件流，并向用户返回明确的超限原因。
     """
@@ -41,7 +41,7 @@ class AgentRunLimitExceeded(RuntimeError):
 
 @dataclass
 class AgentRunLimits:
-    """ Agent Loop 的轻量保护阈值
+    """Agent Loop 的轻量保护阈值。
 
     open-swe 的模型循环主要由 `ModelCallLimitMiddleware` 保护。
     LQ_AICODING 运行在 FastAPI 内，这里只保留更可靠的时间和工具调用上限。
@@ -131,9 +131,9 @@ class AgentRunLimitTracker:
         #  检查工具调用次数
         method = event.get("method")
         if method in {"tool_calls", "tools"}:
-            pyload = self._first_payload(event)
+            payload = self._first_payload(event)
             #  从 payload 中读取事件名称
-            event_name = pyload.get("event") if isinstance(pyload, dict) else None
+            event_name = payload.get("event") if isinstance(payload, dict) else None
             #  检查工具调用次数
             if method == "tool_calls" or event_name == "tool-started":
                 # 兼容不同事件形态：有的流直接用 tool_calls，有的在 tools 事件里标记 tool-started

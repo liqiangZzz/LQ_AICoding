@@ -148,7 +148,7 @@ def _is_mac_absolute_path(value: str) -> bool:
 def sanitize_workspace_path(value: Any, *, argument_name: str, backend: LocalShellBackend) -> Any:
     """清洗路径类参数。 对工具入参中的路径进行工作区路径清洗。
 
-    后端 `Workspace.resolve()` 仍然式最终安全便捷。
+    后端 `Workspace.resolve()` 仍然是最终安全边界。
     middleware 只在调用前做更友好的规范化和敏感目录拦截，避免模型反复把 `E:\\`、`.secrets` 这类路径传给工具。
     """
 
@@ -209,7 +209,7 @@ def sanitize_tool_kwargs(tool_name: str, kwargs: dict[str, Any], *, backend: Loc
     """根据参数名对工具入参做统一清洗。
 
     这里不做具体的业务推断，只处理所有工具共享的高风险参数： 路径和 GitHub URL。
-    工具自己的业务校验仍然放在圆工具函数内部。
+    工具自己的业务校验仍然放在原工具函数内部。
     """
 
     # 复制一份参数，避免直接修改 LangGraph 传入的原始 tool_call 对象。
