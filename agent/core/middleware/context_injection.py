@@ -8,7 +8,7 @@ from langgraph.config import get_config
 from langgraph.runtime import Runtime
 
 from agent.core.graph import get_langgraph_store
-from agent.store.repo_memory import (
+from agent.core.repo_memory import (
     build_repo_memory_namespace,
     repo_memory_store_key,
     repo_memory_virtual_path,
@@ -66,7 +66,7 @@ def _repo_url_and_content_from_config() -> tuple[str | None, str | None]:
     repo_url = repo_url if isinstance(repo_url, str) and repo_url.strip() else None
 
     # 仓库记忆内容
-    memory_content = configurable.get("memory_content")
+    memory_content = configurable.get("_repo_memory_content")
     memory_content = memory_content if isinstance(memory_content, str) and memory_content.strip() else None
     return repo_url, memory_content
 

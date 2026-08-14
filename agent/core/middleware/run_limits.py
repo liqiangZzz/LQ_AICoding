@@ -99,10 +99,13 @@ class AgentRunLimits:
 
 
 class AgentRunLimitTracker:
-    """ 根据 LangGraph 事件流统计本轮 Agent 运行规模
+    """根据 LangGraph 事件流统计本轮 Agent 运行规模。
 
     Tracker 是单轮任务级对象，不应跨 thread 或 跨 run 复用。
     每次创建时记录开始事件，并随着事件流推进累计工具调用次数。
+
+    注意：Tracker 不执行也不包裹工具。具体工具由 DeepAgents 工具节点调用；
+    本类只在 streaming_runtime 消费 raw event 时观察执行进度并在超限后中止。
     """
 
     def __init__(self, limits: AgentRunLimits | None = None, task_kind: str | None = None) -> None:

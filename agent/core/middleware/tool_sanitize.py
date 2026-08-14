@@ -131,7 +131,9 @@ def _is_absolute_path(value: str) -> bool:
     PurePath 不依赖当前宿主机，因此能够同时识别 `/Users/...` 和 `C:\\...`。
     """
 
+    # 识别 Windows 绝对路径
     windows_path = PureWindowsPath(value)
+    # 识别 macOS/POSIX 绝对路径
     return PurePosixPath(value).is_absolute() or (
         windows_path.is_absolute() and bool(windows_path.drive)
     )
@@ -171,10 +173,13 @@ def sanitize_workspace_path(value: Any, *, argument_name: str, backend: LocalShe
         # 如果绝对路径仍然落在 workspace 内，则转换成相对路径；
         # 如果指向 workspace 外部，则直接拒绝，避免工具层触达宿主机其他目录。
         resolved_root = backend.workspace.root.resolve()
+        # 解析绝对路径
         resolved_path = Path(cleaned).resolve()
 
+        # 如果解析后的路径等于 workspace 根目录，则返回相对路径 "."
         if resolved_path == resolved_root:
             return "."
+        # 如果解析后的路径在 workspace 根目录下，则返回相对路径
         if resolved_root in resolved_path.parents:
             return resolved_path.relative_to(resolved_root).as_posix()
         raise ToolInputRejected(f"{argument_name} 不能使用工作区外的绝对路径：{cleaned}")
@@ -211,12 +216,15 @@ def sanitize_tool_kwargs(tool_name: str, kwargs: dict[str, Any], *, backend: Loc
     sanitized = dict(kwargs)
     for key in PATH_ARGUMENTS:
         if key in sanitized:
+            # 对路径参数进行工作区路径清洗
             sanitized[key] = sanitize_workspace_path(sanitized[key], argument_name=key, backend=backend)
     for key in GITHUB_URL_ARGUMENTS:
         if key in sanitized:
+            # 对 GitHub URL 参数进行规范
             sanitized[key] = _sanitize_github_url(sanitized[key])
     for key in READ_FILE_INT_ARGUMENTS:
         if key in sanitized:
+            # 对文件读取参数进行整数修正
             sanitized[key] = _coerce_int(sanitized[key])
     logger.debug("工具入参清洗完成：tool=%s keys=%s", tool_name, sorted(sanitized))
     return sanitized

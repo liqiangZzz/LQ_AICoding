@@ -23,11 +23,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import AgentState
 from langgraph.config import get_config
 
-from agent.store.repo_memory import (
-    RepoMemoryUpdate,
-    get_repo_memory_store,
-    update_repo_memory_from_text,
-)
+from agent.core.graph import get_langgraph_store
+from agent.core.repo_memory_update import RepoMemoryUpdate, update_repo_memory_from_text
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 logger = logging.getLogger("agent.run.middleware.memory_update")
@@ -151,7 +148,7 @@ class MemoryUpdateMiddleware(AgentMiddleware):
         # parse_github_repo_url 会保证这里只处理 GitHub 仓库，符合当前项目范围。
         repo = parse_github_repo_url(repo_url)
         update_repo_memory_from_text(
-            store=get_repo_memory_store(),
+            store=get_langgraph_store(),
             repo=repo,
             update=RepoMemoryUpdate(task_kind=_task_kind_from_config(), final_text=final_text),
         )

@@ -32,7 +32,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ToolMessage
 
 logger = logging.getLogger("agent.run.middleware.message_sanitize")
@@ -319,7 +324,8 @@ def _message_changed(before: AnyMessage, after: AnyMessage) -> bool:
 
     try:
         return before.model_dump() != after.model_dump()
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
+        # 兼容少量非 Pydantic 的消息替身对象，比较失败不应阻止模型调用。
         return before != after
 
 
