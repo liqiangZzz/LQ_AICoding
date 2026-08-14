@@ -27,6 +27,7 @@ from agent.tools.safe_http import request_with_safe_redirects
 logger = logging.getLogger("agent.run.fetch_url")
 
 
+# 纯文本提取器
 class _TextExtractor(HTMLParser):
     """极简 HTML 文本提取器。
 
@@ -43,30 +44,58 @@ class _TextExtractor(HTMLParser):
         self.parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """
+        开始标签处理函数，跳过脚本、样式和 noscript内容，保留基本段落结构。
+
+        Args:
+            tag: 标签名称。
+            attrs: 标签属性列表。
+        """
+
         # 跳过脚本、样式和 noscript 内容，避免把页面代码喂给模型。
         if tag in {"script", "style", "noscript"}:
             self._skip_depth += 1
+
         # 块级标签前补换行，保留基本段落结构。
         if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        """
+        结束标签处理函数，跳过脚本、样式和 noscript内容，保留基本段落结构。
+        Args:
+            tag: 标签名称。
+        """
         # 结束跳过区域时减少深度，避免误丢后续正文。
         if tag in {"script", "style", "noscript"} and self._skip_depth:
             self._skip_depth -= 1
+
         # 段落、列表项、表格行和标题结束时补换行，提升可读性。
         if tag in {"p", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
+        """
+        数据处理函数，收集非跳过区域的文本片段。
+        Args:
+            data: 文本数据。
+        """
+
+        # 跳过脚本、样式和 noscript 内容，避免把页面代码喂给模型。
         if self._skip_depth:
             return
+
         # HTML 实体解码后压缩片段内空白，减少模型上下文浪费。
         text = " ".join(html.unescape(data).split())
         if text:
             self.parts.append(text)
 
     def text(self) -> str:
+        """
+        获取提取的文本内容。
+        Returns:
+            提取的文本内容。
+        """
         # 合并片段后清理多余空白和连续空行，输出稳定的正文文本。
         raw = " ".join(self.parts)
         raw = re.sub(r"[ \t]+\n", "\n", raw)
@@ -79,6 +108,11 @@ def _html_to_markdown(content: str) -> str:
 
     如果用户后续愿意增加 markdownify 依赖，这里会自动获得更好的 Markdown 结果；
     没有该依赖时，退化为标准库纯文本提取。
+
+    Args:
+        content: HTML 内容。
+    Returns:
+        转换后的 Markdown 内容。
     """
 
     try:
@@ -126,6 +160,7 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
         )
 
     try:
+        # 发起 HTTP GET 请求，支持安全重定向。
         response, blocked = request_with_safe_redirects(
             "GET",
             normalized_url,
@@ -133,18 +168,24 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             timeout=max(1, min(int(timeout), 60)),
             headers={"User-Agent": "LQ-AICODING/1.0"},
         )
+        # 检查安全重定向结果
         if blocked:
             # 安全策略拒绝访问时，safe_http 会返回统一错误结构。
             result = blocked
         else:
             assert response is not None
+            # 检查 HTTP 响应状态码，避免后续处理无效内容。
             response.raise_for_status()
+            # 根据 Content-Type 判断响应内容类型，进行相应处理。
             content_type = response.headers.get("content-type", "")
+
+            #  HTML 内容按 Markdown 处理，提升可读性。
             if "html" in content_type.lower():
                 markdown_content = _html_to_markdown(response.text)
             else:
                 # 非 HTML 内容按文本处理，例如 JSON、Markdown、纯文本错误日志。
                 markdown_content = response.text.strip()
+
             result = {
                 "ok": True,
                 "url": str(response.url),

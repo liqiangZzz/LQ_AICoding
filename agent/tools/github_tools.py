@@ -60,11 +60,14 @@ def open_github_pull_request(
 
     # 创建或复用 Pull Request
     pr = create_pull_request(owner=owner, repo=repo, head=head, base=base, title=title, body=body)
+    # 获取 PR URL
     pr_url = pr.get("html_url") or pr.get("url") or ""
 
     if thread_id:
         # Store 中保存 Pull Request 状态，后续任务列表、详情页和最终结果都可以直接读取。
         get_store().update_thread_status(thread_id, "pr_created", pr_url=pr_url, branch=head)
+
+        # 事件表用于前端展示工具执行进度，也便于排查 Agent 在哪个阶段失败。
         record_event(
             thread_id,
             "github:pr",
@@ -73,6 +76,8 @@ def open_github_pull_request(
             status="completed",
             detail=pr_url,
         )
+
+    # 打印日志
     if pr.get("reused"):
         # 重复创建同一 head/base PR 时，底层 API 会返回 reused=True 的兼容结构。
         logger.info("GitHub PR 已存在，复用已有 PR：thread_id=%s pr_url=%s", thread_id, pr_url)
@@ -96,4 +101,6 @@ def publish_github_pr_comment(owner: str, repo: str, number: int, body: str) -> 
     """
     # 评论内容可能较长，不写入日志，日志只保留仓库和 PR 编号用于问题定位
     logger.info("准备发布 GitHub PR 评论：owner=%s repo=%s number=%s", owner, repo, number)
+
+    # 发布评论
     return post_pr_comment(owner=owner, repo=repo, number=number, body=body)

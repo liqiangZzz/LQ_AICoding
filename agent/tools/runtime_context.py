@@ -22,6 +22,7 @@ def get_runtime_configurable() -> dict[str, Any]:
         return {}
 
     configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+
     # 防御式校验，避免调用方传入 非dict configurable 导致工具层异常扩散。
     return configurable if isinstance(configurable, dict) else {}
 
@@ -46,6 +47,7 @@ def get_runtime_task_kind() -> TaskKind:
     """
 
     value = get_runtime_configurable().get("task_kind","coding")
+
     # 只接受系统已知的枚举值->任务类型，避免模型或外部请求伪造任意类型影响权限判断
     if value in {"coding", "analysis", "planning", "qa", "sync", "inspect"}:
         return value
@@ -56,5 +58,4 @@ def runtime_is_read_only_task() -> bool:
 
     工具层通过这个函数集中复用任务权限规则，避免每个工具各自维护一份判断逻辑。
     """
-
     return is_read_only_task(get_runtime_task_kind())

@@ -90,6 +90,7 @@ def web_search(query: str) -> str:
             count=3,
             search_recency_filter="noLimit",
         )
+        # 获取搜索结果列表，避免 SDK 对象直接暴露给模型。
         results = getattr(response, "search_result", None) or []
         if not results:
             output = "没有搜索到任何内容。"
@@ -121,6 +122,7 @@ def web_search(query: str) -> str:
         error = mask_token(str(exc))
         logger.warning("联网搜索失败：query=%s error=%s", normalized_query, error)
         if thread_id:
+            # 事件详情只记录预览片段，避免把大量搜索结果重复写入事件表。
             record_event(
                 thread_id,
                 f"web_search:{normalized_query[:80]}",

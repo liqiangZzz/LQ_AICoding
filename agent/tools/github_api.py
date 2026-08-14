@@ -35,16 +35,19 @@ def parse_github_repo_url(repo_url: str) -> GitHubRepo:
         ValueError: URL 不是 github.com 域名，或路径中无法解析出 owner/repo。
     """
 
+    # 去除 URL 前后的空格，并解析出 hostname 和路径
     parsed = urlparse(repo_url.strip())
     hostname = (parsed.hostname or "").lower()
 
     if hostname not in ("github.com", "www.github.com"):
         raise ValueError("当前仅支持 github.com 仓库地址")
 
+    # 去除路径前后的空格，并按 / 切分，至少需要两个部分：owner 和 repo
     parts = [p for p in parsed.path.strip("/").split("/") if p]
     if len(parts) < 2:
         raise ValueError(f"无法解析 GitHub 仓库地址: {repo_url}")
 
+    # owner 是路径的第一个部分，repo 是第二个部分
     owner = parts[0]
     # 统一去掉 `.git` 后缀，API 路径使用纯 repo 名，clone_url 再补回标准后缀。
     repo = re.sub(r"\.git$", "", parts[1])
@@ -71,6 +74,11 @@ def mask_token(text: str) -> str:
 
     API 错误、Git 输出和异常信息可能包含访问令牌
     所有写日志或返回给模型的外部错误文本都应该经过该函数做脱敏处理
+
+    Args:
+        text: 待脱敏的文本内容。
+    Returns:
+        脱敏后的文本内容。
     """
     masked = text
     for token_name in ("GITHUB_TOKEN", "GH_TOKEN", "SCM_GITHUB_TOKEN"):
@@ -99,8 +107,24 @@ def _find_existing_pull_request(
         head: str,
         base: str,
 ) -> dict[str, Any] | None:
-    """查询相同源分支和目标分支的现有开放 PR。"""
+    """查询相同源分支和目标分支的现有开放 PR。
+
+    Args:
+        client: httpx.Client
+        api_base: GitHub API 基础 URL
+        headers: 请求头
+        owner: 仓库所有者
+        repo: 仓库名
+        head: 源分支
+        base: 目标分支
+    Returns:
+        GitHub API 返回的 PR JSON；如果未找到则返回 None
+    """
+
+    # 构造源分支，格式为 owner:branch
     qualified_head = head if ":" in head else f"{owner}:{head}"
+
+    #  调用 GitHub API 查询现有 PR
     response = client.get(
         f"{api_base}/repos/{owner}/{repo}/pulls",
         headers=headers,
@@ -153,6 +177,7 @@ def create_pull_request(
         "head": head,
         "base": base,
     }
+    # 创建 Pull Request
     with httpx.Client(timeout=30) as client:
         headers = _headers(token)
         response = client.post(url, headers=headers, json=payload)

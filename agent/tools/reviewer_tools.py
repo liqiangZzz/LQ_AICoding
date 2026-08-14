@@ -39,6 +39,7 @@ def add_review_finding(
 
     # 使用短 UUID 作为本地发现项 id，避免依赖数据库自增 id 暴露给模型。
     finding_id = f"finding-{uuid.uuid4().hex[:8]}"
+
     # 所有审查发现都绑定当前 thread_id，保证不同任务之间的数据不会串联。
     get_local_store().add_finding(
         finding_id=finding_id,
@@ -63,5 +64,6 @@ def list_review_findings() -> list[dict[str, Any]]:
     thread_id = get_runtime_thread_id()
     if not thread_id:
         return [{"status": "error", "error": "缺少 thread_id，无法读取审查发现。"}]
+
     # Store 层负责具体 SQL 查询和结果结构化，这里只传递当前任务的 thread_id。
     return get_local_store().list_findings(thread_id)
