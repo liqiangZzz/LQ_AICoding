@@ -1,4 +1,9 @@
-from datetime import datetime, UTC
+"""仓库长期记忆的路径、namespace 和初始化逻辑。
+
+与写回模块的分工见同目录 `repo_memory_说明.md`。
+"""
+
+from datetime import UTC, datetime
 from typing import Final
 
 from deepagents.backends.utils import create_file_data
@@ -70,6 +75,12 @@ def repo_memory_store_key(owner: str, repo: str) -> str:
     return f"/{owner}/{repo}.md"
 
 
+def repo_memory_virtual_path(owner: str, repo: str) -> str:
+    """返回 Agent 可见的仓库记忆虚拟路径。"""
+
+    return f"/memories/{owner}/{repo}.md"
+
+
 def _extract_owner_repo_from_namespace(namespace: tuple[str, ...]) -> tuple[str, str] | None:
     """从 namespace 中提取 owner 和 repo。
 
@@ -92,7 +103,7 @@ def get_repo_memory_item(store: BaseStore, namespace: tuple[str, ...]):
         return None
 
     owner, repo = owner_repo
-    return store.get(repo_memory_store_key(owner, repo))
+    return store.get(namespace, repo_memory_store_key(owner, repo))
 
 
 def ensure_repo_memory_initialized(
@@ -109,7 +120,7 @@ def ensure_repo_memory_initialized(
     namespace = build_repo_memory_namespace(repo.owner, repo.repo)
     new_key = repo_memory_store_key(repo.owner, repo.repo)
 
-    if store.get(new_key) is not None:
+    if store.get(namespace, new_key) is not None:
         return False
 
     store.put(
@@ -118,3 +129,4 @@ def ensure_repo_memory_initialized(
         # content 是 bytes 类型，表示文件内容
         create_file_data(build_initial_repo_memory(repo=repo, project_dir=project_dir)),
     )
+    return True

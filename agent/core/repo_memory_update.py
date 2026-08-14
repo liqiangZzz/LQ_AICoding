@@ -1,12 +1,23 @@
+"""把 Agent 最终回答提炼为可复用的仓库长期记忆。
+
+本模块不调用模型，而是用保守规则抽取技术栈、测试命令、关键文件和最近结论。
+这样既避免额外模型成本，也避免把完整对话、临时错误或敏感信息写入长期记忆。
+完整数据流见同目录 `repo_memory_说明.md`。
+"""
+
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime
 
 from langgraph.store.base import BaseStore
 
-from agent.core.repo_memory import build_repo_memory_namespace, get_repo_memory_item, repo_memory_store_key
-from agent.tools.github_api import mask_token, GitHubRepo
+from agent.core.repo_memory import (
+    build_repo_memory_namespace,
+    get_repo_memory_item,
+    repo_memory_store_key,
+)
+from agent.tools.github_api import GitHubRepo, mask_token
 
 logger = logging.getLogger("agent.run.repo_memory_update")
 
@@ -21,7 +32,7 @@ SENSITIVE_MARKERS = (".env", ".secrets", "api_key", "apikey", "private key", "�
 class RepoMemoryUpdate:
     """一次仓库记忆更新所需的稳定事实"""
 
-    task_id: str
+    task_kind: str
     final_text: str
     branch_name: str | None = None
     pr_url: str | None = None
@@ -51,7 +62,7 @@ def _extract_bullets(text: str, *, keywords: tuple[str, ...], limit: int = 8) ->
     这里只做规则提取，不调用模型。它适合抓取 Agent 最终总结里的测试命令、
     关键文件、已完成能力等稳定信息。
     """
-    results = list[str] = []
+    results: list[str] = []
     for raw_line in text.splitlines():
         # 必须是列表项
         if not re.match(r"^\s*(?:[-*]|\d+[.)、])\s+", raw_line):
@@ -89,7 +100,7 @@ def _extract_bullets(text: str, *, keywords: tuple[str, ...], limit: int = 8) ->
 def _extract_code_items(text: str, *, suffixes: tuple[str, ...], limit: int = 10) -> list[str]:
     """从 Markdown 反引号内容中提取文件名或命令"""
 
-    results = list[str] = []
+    results: list[str] = []
     # 提取反引号内容
     for item in re.findall(r"`([^`]+)`", text):
         # 去除行首和行尾的空格和制表符
@@ -98,9 +109,11 @@ def _extract_code_items(text: str, *, suffixes: tuple[str, ...], limit: int = 10
         if not clean or _contains_sensitive_text(clean):
             continue
         # 文件名或命令
-        if any(clean.endswith(suffixes) for suffix in suffixes) or any(suffix in clean for suffix in suffixes):
-            if clean not in results:
-                results.append(mask_token(clean))
+        if (
+            any(clean.endswith(suffixes) for suffix in suffixes)
+            or any(suffix in clean for suffix in suffixes)
+        ) and clean not in results:
+            results.append(mask_token(clean))
         if len(results) >= limit:
             break
     return results
@@ -140,7 +153,11 @@ def _extract_test_commands(text: str, *, limit: int = 5) -> list[str]:
     if len(results) < limit:
         # 提取行内内容
         # 命令以 python -m pytest 或 pytest 开头
-        for match in re.findall(r"(?:python\s+-m\s+pytest|pytest)(?:\s+[A-Za-z0-9_./\\:-]+)?", text, flags=re.I):
+        for match in re.findall(
+            r"(?:python\s+-m\s+pytest|pytest)(?:\s+[A-Za-z0-9_./\\:-]+)?",
+            text,
+            flags=re.IGNORECASE,
+        ):
             clean = " ".join(match.strip().split())
             if clean and clean not in results and not _contains_sensitive_text(clean):
                 results.append(mask_token(clean))
@@ -153,7 +170,9 @@ def _extract_file_names(text: str, *, limit: int = 10) -> list[str]:
     """从普通说明文字中提取常见项目文件名"""
 
     results: list[str] = []
-    for match in re.findall(r"[\w.-]+\.(?:py|md|txt|html|json|toml)", text, flags=re.I):
+    for match in re.findall(
+        r"[\w.-]+\.(?:py|md|txt|html|json|toml)", text, flags=re.IGNORECASE
+    ):
         clean = match.strip()
         if clean and clean not in results and not _contains_sensitive_text(clean):
             results.append(mask_token(clean))
@@ -187,7 +206,10 @@ def _replace_section(memory: str, heading: str, items: list[str]) -> str:
     # 构建列表项
     section = f"{heading}\n" + "\n".join(f"- {item}" for item in items) + "\n\n"
     # 构建正则表达式模式
-    pattern = re.compile(rf"(^## {re.escape(heading.removeprefix('## '))}\n)(.*?)(?=^## |\Z)", re.M | re.S)
+    pattern = re.compile(
+        rf"(^## {re.escape(heading.removeprefix('## '))}\n)(.*?)(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
     # 替换内容
     if pattern.search(memory):
         return pattern.sub(section, memory, count=1)
@@ -202,7 +224,7 @@ def _append_recent(memory: str, *, task_kind: str, fact: str) -> str:
         return memory
 
     # 构建列表项
-    entry = f"- {date.today().isoformat()} ({task_kind}) : {fact}"
+    entry = f"- {datetime.now(UTC).date().isoformat()} ({task_kind}) : {fact}"
     heading = "## 最近结论"
     # 列表项已存在
     if entry in memory:
@@ -245,14 +267,18 @@ def _metadata_items(*, branch_name: str | None, pr_url: str | None) -> list[str]
 
 
 def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
-    """根据任务最终输出生成更新后的仓库记忆正文。"""
+    """根据任务最终输出生成更新后的仓库记忆正文。
+
+    处理顺序刻意保持固定：先统一脱敏并执行敏感内容熔断，再分别抽取稳定字段，
+    最后追加有数量上限的最近结论。任何一步没有可信结果时都保留原章节。
+    """
 
     text = mask_token(update.final_text or "")
     # 空内容或判断内容是否包含不应写入长期记忆的敏感标记
     if not text.strip() or _contains_sensitive_text(text):
         return memory
 
-    # 识别技术栈
+    # 第一阶段：提取可覆盖固定章节的稳定事实。
     stack = _detect_stack(text)
     # 提取测试命令
     test_commands = _extract_test_commands(text, limit=5)
@@ -265,7 +291,7 @@ def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
         if len(key_files) >= 10:
             break
 
-    # 提取完成能力
+    # 第二阶段：从面向用户的列表项中提取已经完成的能力。
     completed_features = _extract_bullets(
         text,
         keywords=("接口", "新增", "完成", "实现", "测试通过", "passed"),
@@ -278,7 +304,7 @@ def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
         if not any(skip in item for skip in ("分支", "Pull Request", " PR", "Fast-forward", "merge"))
     ]
 
-    # 构建更新内容
+    # 第三阶段：只替换成功提取到内容的章节，避免用空结果覆盖已有记忆。
     updated = memory
 
     # 替换或追加内容
@@ -298,7 +324,7 @@ def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
     if completed_features:
         updated = _replace_section(updated, "## 已完成能力", completed_features)
 
-    # 追加“最近结论”
+    # 最近结论采用追加并限长的策略，保留近期上下文但避免记忆无限增长。
     return _append_recent(updated, task_kind=update.task_kind, fact=_compact_line(text))
 
 

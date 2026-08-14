@@ -1,4 +1,7 @@
-"""远程仓库与本地工作区的映射辅助。"""
+"""远程仓库与本地工作区的映射辅助。
+
+映射优先级和 remote 验证逻辑见同目录 `repo_mapping_说明.md`。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +13,7 @@ from urllib.parse import urlparse
 
 from agent.backends.workspace import Workspace
 from agent.store import LocalSqliteStore
-from agent.tools.github_api import parse_github_repo_url, GitHubRepo
+from agent.tools.github_api import GitHubRepo, parse_github_repo_url
 
 
 @dataclass(frozen=True)
@@ -95,7 +98,7 @@ def _is_nested_projects_dir(project_dir: str) -> bool:
 
 
 def remote_matches_repo(remote_url: str | None, repo_url: str) -> bool:
-    """判断本地 remote origin 是否对应目标 Gitee 仓库。"""
+    """判断本地 remote origin 是否对应目标 GitHub 仓库。"""
     if not remote_url:
         return False
 
@@ -145,7 +148,8 @@ def discover_repo_mapping(
     3. 只扫描 `projects/*` 下一级 Git 仓库，通过 origin remote 匹配。
     4. 都找不到时返回默认 clone 目录 `projects/仓库名`。
     """
-    #  读取 SQLite 中已启用映射并验证目录。
+    # 映射不能只相信数据库：目录可能被移动，remote 也可能被用户手动修改。
+    # 因此每次使用前都重新读取 .git/config 验证 origin。
     repo = parse_github_repo_url(repo_url)
     # 读取已保存的映射
     existing = store.get_repo_mapping(repo.clone_url)
