@@ -319,6 +319,21 @@ ruff check .
 - 依赖版本锁定和 CI 检查流程；
 - 前端 Dashboard 与部署文档。
 
+## 核心代码文档
+
+建议先阅读 [`agent/README_代码导读.md`](agent/README_代码导读.md)，其中提供源码与说明文档的一对一对照表。
+
+- [`server.py 说明`](agent/server_说明.md)
+- [`runtime.py 说明`](agent/core/runtime_说明.md)
+- [`streaming_runtime.py 说明`](agent/core/streaming_runtime_说明.md)
+- [`checkpoint_history.py 说明`](agent/core/checkpoint_history_说明.md)
+- [`repo_mapping.py 说明`](agent/core/repo_mapping_说明.md)
+- [`repo_memory.py / repo_memory_update.py 说明`](agent/core/repo_memory_说明.md)
+- [`local_shell.py 说明`](agent/backends/local_shell_说明.md)
+- [`sqlite_store.py 说明`](agent/store/sqlite_store_说明.md)
+- [`中间件总览`](agent/core/middleware/中间件总览.md)
+- [`工具包总览`](agent/tools/工具包总览.md)
+
 ## License
 
 当前仓库尚未添加开源许可证。在许可证明确之前，默认保留所有权利。
