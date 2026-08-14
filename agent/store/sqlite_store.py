@@ -1,3 +1,8 @@
+"""本地业务 SQLite Store。
+
+数据表、字段和方法对应关系见同目录 `sqlite_store_说明.md`。
+"""
+
 import json
 import sqlite3
 import threading

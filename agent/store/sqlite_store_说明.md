@@ -1,4 +1,6 @@
-# LocalSqliteStore 数据库表与方法说明
+# 数据库表与业务方法
+
+> 对应源码：`agent/store/sqlite_store.py`
 
 ## 一、文件整体职责
 
@@ -16,6 +18,24 @@
 - GitHub 仓库与本地目录映射
 
 该类保存的是业务摘要数据，不负责保存完整的 LangGraph 状态。完整的 messages 和 LangGraph thread state 由 checkpoint 数据库负责。
+
+## 常用方法何时调用
+
+| 方法组 | 主要调用方 | 调用时机 |
+|---|---|---|
+| `upsert_thread()`、`update_thread_status()` | `core/runtime.py`、GitHub 工具 | 任务创建、完成、失败或 PR 创建时 |
+| `record_run()`、`get_latest_run()` | `core/runtime.py`、查询 API | 每轮运行开始/结束以及 Dashboard 查询时 |
+| `add_run_event()`、`finish_open_run_events()` | `core/events.py`、runtime | 工具、模型或任务步骤状态变化时 |
+| `add_finding()`、`list_findings()` | `tools/reviewer_tools.py` | review Agent 记录和读取问题时 |
+| `upsert_repo_mapping()`、`get_repo_mapping()` | `core/repo_mapping.py` | 仓库目录发现、验证和 clone 完成时 |
+| `delete_thread()` | `runtime.delete_task()` | 用户删除任务时 |
+
+```text
+runtime/tools -> LocalSqliteStore -> store.sqlite
+Dashboard API <- 查询 threads/runs/run_events/findings
+```
+
+下面各章节继续按“表结构 → 字段 → 方法 → 调用流程”展开。
 
 ---
 
