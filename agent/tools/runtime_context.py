@@ -46,12 +46,13 @@ def get_runtime_task_kind() -> TaskKind:
     回退为 coding 是为了兼容旧调用链没有传 task_kind 的情况。
     """
 
-    value = get_runtime_configurable().get("task_kind","coding")
+    value = get_runtime_configurable().get("task_kind", "coding")
 
-    # 只接受系统已知的枚举值->任务类型，避免模型或外部请求伪造任意类型影响权限判断
-    if value in {"coding", "analysis", "planning", "qa", "sync", "inspect"}:
+    # 只接受系统已知的任务类型，避免任意值影响工具权限判断。
+    if value in {"coding", "analysis", "planning", "qa", "sync", "inspect", "review"}:
         return value
     return "coding"
+
 
 def runtime_is_read_only_task() -> bool:
     """判断当前任务是否为只读模式。

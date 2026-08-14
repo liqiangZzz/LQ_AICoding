@@ -233,6 +233,7 @@ def get_agent(config: RunnableConfig):
         system_prompt=get_system_prompt(task_kind),  # 使用任务类型对应的系统提示词
         middleware=middleware,  # 使用中间件
         backend=agent_backend,  # 使用仓库后端
+        skills=["/skills/"],  # 从工作区加载内置和用户扩展的 skills
         memory=memory_paths,  # 使用仓库记忆
         checkpointer=get_checkpointer(),  # 使用检查点
         store=get_langgraph_store(),  # 使用 LangGraph Store

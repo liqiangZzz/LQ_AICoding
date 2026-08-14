@@ -20,8 +20,8 @@ description: 面向 GitHub 仓库的首次项目分析流程。第一次处理�
 3. 如果本地不存在，使用 `execute` 执行普通 Git 命令克隆仓库，例如：
    `git clone https://github.com/<owner>/<repo>.git`
 4. 如果本地已存在，使用 `execute` 检查状态，例如：
-   `git -C projects/<repo> status`
-   `git -C projects/<repo> fetch --all`
+   `git -C <repo> status`
+   `git -C <repo> fetch --all`
 
 GitHub Token 由 `LocalShellBackend` 通过 Git askpass 自动注入。不要把 token 写进命令、文件、commit message、PR 描述或用户回复。
 
@@ -33,7 +33,7 @@ GitHub Token 由 `LocalShellBackend` 通过 Git askpass 自动注入。不要把
 - `/reviews`：审查结果或历史资料。
 - `/logs`：运行日志目录，只读。
 - `/tmp`：临时文件。
-- `.secrets`：敏感凭据目录，禁止读取、展示、复制或写入用户可见结果。
+- `/secrets`：敏感凭据目录，禁止读取、展示、复制或写入用户可见结果。
 
 ## 2. 建立项目基本画像
 

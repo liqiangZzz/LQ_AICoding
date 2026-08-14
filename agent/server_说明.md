@@ -47,7 +47,7 @@ runtime._build_agent_for_runtime()
   -> 初始化并挂载 /memories/
   -> 按权限选择工具
   -> 注册中间件
-  -> 注入模型、提示词、checkpoint 和 store
+  -> 注入模型、提示词、skills、checkpoint 和 store
 ```
 
 ## 为什么复用 Backend、重建 Agent
@@ -83,6 +83,12 @@ runtime._build_agent_for_runtime()
 ```
 
 这样模型看到的长期记忆像文件，但内容实际保存在独立 SQLite Store 中。
+
+## Skills 和工作区记忆
+
+- `LocalShellBackend` 启动时把应用内置 skills 同步到工作区 `/skills`。
+- `create_deep_agent(skills=["/skills/"])` 让 DeepAgents 扫描该目录并按需加载 `SKILL.md`。
+- `prompt.get_system_prompt()` 会读取 `agent/memory/workspace.md`，把macOS/Windows 共用的虚拟目录约定注入每轮系统提示词。
 
 ## 修改注意事项
 

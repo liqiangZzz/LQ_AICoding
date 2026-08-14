@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent.core.memory import load_workspace_memory
 from agent.core.task_intent import TaskKind
 from agent.platform_utils import platform_display_name, resolve_local_shell_platform
 
@@ -138,15 +139,29 @@ READ_ONLY_PROMPTS: dict[TaskKind, str] = {
 可以使用 `execute` 对 GitHub 仓库执行 `git fetch` 或 `git pull`。
 禁止修改业务代码、提交、push 或创建 Pull Request。
 """,
+    "review": """当前任务类型：代码审查。
+只读要求：
+1. 优先按 `code-review` skill 的检查顺序审查用户指定的 diff 或 Pull Request。
+2. 可以读取文件、Git diff 和已有测试，但禁止修改文件、提交、push 或创建 Pull Request。
+3. 只报告可能导致功能、安全、兼容性或可维护性故障的具体问题，不给纯风格建议。
+4. 每个 finding 要包含文件、行号、严重程度、标题和可触发的风险。
+""",
 }
 
 
 def get_system_prompt(task_kind: TaskKind = "coding") -> str:
     """根据任务类型生成系统提示词。"""
 
+    workspace_memory = load_workspace_memory()
+    workspace_context = (
+        f"\n\n本地工作区固定约定：\n{workspace_memory}"
+        if workspace_memory
+        else ""
+    )
     if task_kind == "coding":
-        return f"{BASE_SYSTEM_PROMPT}\n\n{CODING_PROMPT}"
-    return f"{BASE_SYSTEM_PROMPT}\n\n{READ_ONLY_PROMPTS.get(task_kind, READ_ONLY_PROMPTS['qa'])}"
+        return f"{BASE_SYSTEM_PROMPT}\n\n{CODING_PROMPT}{workspace_context}"
+    task_prompt = READ_ONLY_PROMPTS.get(task_kind, READ_ONLY_PROMPTS["qa"])
+    return f"{BASE_SYSTEM_PROMPT}\n\n{task_prompt}{workspace_context}"
 
 
 SYSTEM_PROMPT = get_system_prompt("coding")
