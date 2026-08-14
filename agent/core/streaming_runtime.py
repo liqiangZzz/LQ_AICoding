@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -13,6 +13,7 @@ from agent.core.middleware.run_limits import AgentRunLimitExceeded, AgentRunLimi
 from agent.env_utils import get_env
 from agent.tools.github_api import mask_token
 
+# 事件结构、Checkpoint 区别和前端写入策略见同目录 `streaming_runtime_说明.md`。
 logger = logging.getLogger("agent.run.streaming")
 
 
@@ -26,7 +27,7 @@ def _safe_attr(value: Any, name: str, default: Any = None) -> Any:
 
     try:
         return getattr(value, name, default)
-    except Exception:
+    except Exception:  # noqa: BLE001 - 第三方流对象的属性访问可能执行自定义描述符
         return default
 
 
@@ -210,7 +211,7 @@ def _tool_call_from_event(event: Any) -> Any | None:
     """尽量从 raw tool_calls event 中提取工具调用对象。
 
     工具事件在不同 DeepAgents 小版本中的字段可能不完全一致；本函数只做保守解析。
-    解析不到时返回 None，具体文件/命令/Gitee 工具仍会通过工具内部 record_event 展示。
+    解析不到时返回 None，具体文件、命令和 GitHub 工具仍会通过内部事件记录展示。
     """
 
     if not isinstance(event, dict) or event.get("method") != "tool_calls":
@@ -247,11 +248,11 @@ def _tool_title(tool_name: str) -> str:
         "execute": "执行命令",
         "list_files": "查看目录",
         "run_command": "执行命令",
-        "sync_gitee_repo": "准备 Gitee 仓库",
+        "sync_github_repo": "准备 GitHub 仓库",
         "create_pull_request": "创建或复用 Pull Request",
-        "open_gitee_pull_request": "创建或复用 Pull Request",
-        "publish_gitee_pr_comment": "发布 PR 评论",
-        "get_gitee_pull_request_context": "读取 PR 审查上下文",
+        "open_github_pull_request": "创建或复用 Pull Request",
+        "publish_github_pr_comment": "发布 PR 评论",
+        "get_github_pull_request_context": "读取 PR 审查上下文",
         "load_review_rules": "读取审查规则",
         "get_review_diff_summary": "读取审查 diff",
         "validate_review_finding_location": "校验审查位置",
@@ -274,11 +275,11 @@ def _tool_kind(tool_name: str) -> str:
     if tool_name in {"ls", "list_files", "glob", "grep"}:
         return "search"
     if tool_name in {
-        "sync_gitee_repo",
+        "sync_github_repo",
         "create_pull_request",
-        "open_gitee_pull_request",
-        "publish_gitee_pr_comment",
-        "get_gitee_pull_request_context",
+        "open_github_pull_request",
+        "publish_github_pr_comment",
+        "get_github_pull_request_context",
     }:
         return "fetch"
     if tool_name in {"web_search", "fetch_url"}:
@@ -512,11 +513,11 @@ def _summarize_raw_event(event: Any) -> dict[str, Any]:
 def _debug_raw_stream_events(*, agent: Any, thread_id: str, content: str) -> None:
     """按开关记录真实 raw event 结构。
 
-    该诊断会额外启动一条极短 DeepAgent 流，只在 `LX_AICODING_DEBUG_STREAM_EVENTS=1`
+    该诊断会额外启动一条极短 DeepAgent 流，只在 `LQ_AICODING_DEBUG_STREAM_EVENTS=1`
     时启用。它不参与正式任务结果，只用于确认 DeepAgents 当前版本真实事件字段。
     """
 
-    if get_env("LX_AICODING_DEBUG_STREAM_EVENTS") != "1":
+    if get_env("LQ_AICODING_DEBUG_STREAM_EVENTS") != "1":
         return
     debug_thread_id = f"{thread_id}:debug-stream"
     try:
@@ -597,7 +598,7 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
        工具步骤和子 Agent 生命周期展示。
 
     如果某个 DeepAgents 小版本没有在 raw event 中暴露 tool_calls，工具内部的 record_event
-    仍然会记录读文件、命令、Gitee 等步骤；但 write_todos 只有 raw tool_calls 可见时才会出现。
+    仍然会记录读文件、命令、GitHub 等步骤；但 write_todos 只有 raw tool_calls 可见时才会出现。
     """
 
     tool_call_index = 0
@@ -609,8 +610,12 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
     saw_write_todos = False
     limit_tracker = AgentRunLimitTracker(task_kind=task_kind)
 
+    # 单次遍历同时处理四类事件。判断顺序不能随意调整：文本 delta 最常见，先处理并
+    # continue 可以避免同一 message 事件又被误判成工具事件。
     for event in stream:
         limit_tracker.observe_event(event)
+
+        # 1. 模型正文：按字符阈值合并后写入事件表，降低 SQLite 写入频率。
         delta = _text_delta_from_event(event)
         if delta:
             accumulated_message_text += delta
@@ -623,6 +628,7 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
                 last_flushed_length = len(accumulated_message_text)
             continue
 
+        # 2. 工具参数流：write_todos 的 JSON 可能分多次到达，需要按 call_id 累积状态。
         tool_chunk = _tool_chunk_from_message_event(event)
         if tool_chunk is not None:
             tool_name = str(tool_chunk.get("name") or "")
@@ -645,6 +651,7 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
                         write_todo_last_payload_by_call[call_id] = payload_text
             continue
 
+        # 3. 完整工具调用及工具生命周期事件：主要用于前端任务清单展示。
         tool_call = _tool_call_from_event(event)
         if tool_call is not None:
             tool_call_index += 1
@@ -675,6 +682,7 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
                         write_todo_last_payload_by_call[call_id] = payload_text
             continue
 
+        # 4. 子智能体事件：当前只记录生命周期摘要，不保存其完整内部消息。
         subagent = _subagent_from_event(event)
         if subagent is not None:
             subagent_index += 1

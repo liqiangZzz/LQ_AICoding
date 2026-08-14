@@ -17,9 +17,9 @@ logger = logging.getLogger("agent.api")
 
 
 class TaskCreateRequest(BaseModel):
-    repo_url: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
-    thread_id: str | None = None
+    repo_url: str = Field(min_length=1) # 仓库地址
+    prompt: str = Field(min_length=1) # 提示词
+    thread_id: str | None = None # 线程ID
 
 
 @router.get("/health")
@@ -52,6 +52,7 @@ async def create_task(body: TaskCreateRequest) -> dict[str, Any]:
     """创建任务，并把同步 Agent 执行移到工作线程，避免阻塞事件循环。"""
     logger.info("收到任务请求: repo_url=%s, thread_id=%s", body.repo_url, body.thread_id)
     try:
+        # 这里使用 asyncio.to_thread() 把阻塞的 run_agent_task() 移到工作线程，避免阻塞事件循环
         return await asyncio.to_thread(
             run_agent_task,
             repo_url=body.repo_url,
@@ -62,17 +63,20 @@ async def create_task(body: TaskCreateRequest) -> dict[str, Any]:
         logger.warning("任务请求被拒绝: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception("任务执行失败: %s", exc)
+        # logger.exception 会自动附带当前异常堆栈，无需重复格式化异常对象。
+        logger.exception("任务执行失败")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/api/tasks")
 def tasks(limit: int = 50) -> list[dict[str, Any]]:
+    # 读取最近任务列表，供页面展示历史运行记录
     return list_tasks(limit=limit)
 
 
 @router.get("/api/tasks/{thread_id}")
 def task_detail(thread_id: str) -> dict[str, Any]:
+    # 根据线程ID获取任务详情
     task = get_task(thread_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")

@@ -15,10 +15,9 @@
 """
 import logging
 from functools import lru_cache
-
 from typing import Literal
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from agent.core.model import make_intent_model
@@ -26,7 +25,7 @@ from agent.core.model import make_intent_model
 logger = logging.getLogger("agent.run.task_intent")
 
 # 任务类型
-TaskKind = Literal["coding", "analysis", "planning", "qa", "sync", "inspect"]
+TaskKind = Literal["coding", "analysis", "planning", "qa", "sync", "inspect", "review"]
 
 # 允许的任务类型
 _ALLOWED_TASK_KINDS: set[str] = {"coding", "analysis", "planning", "qa", "sync", "inspect", "review"}
@@ -125,7 +124,9 @@ def _classify_by_keyword_backup(prompt: str) -> TaskKind:
 
      备份文件是模型分类改造前的完整实现。模型不可用、结构化解析失败或测试环境没有真实 key 时，仍然可以保持项目可用。
     """
-    from agent.core.task_intent_keyword_backup import classify_task_kind as keyword_classify_task_kind
+    from agent.core.task_intent_keyword_backup import (
+        classify_task_kind as keyword_classify_task_kind,
+    )
 
     return keyword_classify_task_kind(prompt)
 
@@ -369,7 +370,7 @@ def classify_task_kind(prompt: str) -> TaskKind:
 
     try:
         predicted = _classify_by_model(prompt)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 模型、网络和结构化解析失败都必须安全降级
         fallback = _classify_by_keyword_backup(prompt)
         logger.warning(
             "模型意图分类失败，回退关键词分类：fallback=%s error=%s",

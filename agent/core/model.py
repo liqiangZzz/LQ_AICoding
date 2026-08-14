@@ -3,7 +3,7 @@ from functools import lru_cache
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from agent.env_utils import require_env, get_env
+from agent.env_utils import get_env, require_env
 
 DEEPSEEK_V4_MAX_TOKENS = 25600
 INTENT_MODEL_MAX_TOKENS = 200
@@ -25,7 +25,7 @@ def make_main_model() -> BaseChatModel:
     `ChatOpenAI` 的稳定行为，又便于后续把模型供应商抽象成配置。
     """
     return init_chat_model(
-        model=get_env("MAIN_MODEL", "deepseek-v4-pro"),
+        model=get_env("MAIN_MODEL", "deepseek-v4-pro"), #  默认使用 deepseek-v4-pro
         model_provider="openai",
         temperature=1.1,
         api_key=require_env("DEEPSEEK_API_KEY"),

@@ -1,4 +1,6 @@
-# runtime.py Agent 运行时编排层业务流程说明
+# Agent 运行时编排层
+
+> 对应源码：`agent/core/runtime.py`
 
 ## 一、文件定位
 
@@ -14,6 +16,27 @@
 - 删除任务时协调清理业务 Store 和 LangGraph checkpoint。
 
 runtime 不直接实现模型推理，也不直接组装模型、工具、中间件和后端；这些由 `agent.server.get_agent()` 统一构建。
+
+### 核心入口何时调用
+
+| 函数 | 谁调用 | 调用时机 | 后续去向 |
+|---|---|---|---|
+| `run_agent_task()` | `api/routes.py:create_task()` | 收到 `POST /api/tasks` 后 | 分类任务并选择下面某一条分支 |
+| `run_workspace_listing_task()` | `run_agent_task()` | 用户只要求查看本地项目 | 直接读工作区，不调用模型 |
+| `run_pull_only_task()` | `run_agent_task()` | 用户只要求 clone/fetch/pull | 准备仓库并更新映射，不进入 coding |
+| `run_plan_response_task()` | `run_agent_task()` | 首次 coding 请求或用户要求修改方案 | 构建 planning Agent，输出待确认方案 |
+| `_build_agent_for_runtime()` | 方案或通用 Agent 分支 | 即将调用模型时 | 调用 `server.get_agent()` 完成装配 |
+| `get_task()` / `list_tasks()` | 查询 API | Dashboard 查询任务时 | 聚合业务 Store 中的展示数据 |
+| `delete_task()` | 删除入口 | 用户删除任务时 | 同时清理业务数据和 checkpoint |
+
+```text
+routes.create_task()
+  -> run_agent_task()
+     ├─ inspect -> run_workspace_listing_task()
+     ├─ sync    -> run_pull_only_task()
+     ├─ coding（未确认）-> run_plan_response_task()
+     └─ 其他/已确认 -> _build_agent_for_runtime() -> 事件流执行
+```
 
 ---
 

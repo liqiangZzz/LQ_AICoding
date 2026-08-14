@@ -12,6 +12,8 @@
 
 可以把 runtime.py 理解成“产品流程控制层”：它保证用户没有确认方案前不会
 进入 coding，也保证 Store 只保存业务数据，真实对话历史以 LangGraph checkpoint 为准。
+
+更完整的业务流程图见同目录 `runtime_说明.md`。
 """
 import json
 import logging
@@ -25,6 +27,8 @@ from agent.core.checkpoint_history import visible_checkpoint_messages
 from agent.core.events import record_event
 from agent.core.graph import get_checkpointer, get_langgraph_store, get_store
 from agent.core.repo_mapping import discover_repo_mapping, save_clone_mapping
+from agent.core.repo_memory import ensure_repo_memory_initialized
+from agent.core.repo_memory_update import RepoMemoryUpdate, update_repo_memory_from_text
 from agent.core.settings import PROJECTS_DIR, WORKSPACE_ROOT
 from agent.core.streaming_runtime import run_agent_with_event_stream
 from agent.core.task_intent import (
@@ -33,14 +37,10 @@ from agent.core.task_intent import (
     is_workspace_listing_task,
 )
 from agent.server import get_agent
-from agent.store.repo_memory import (
-    RepoMemoryUpdate,
-    ensure_repo_memory_initialized,
-    update_repo_memory_from_text,
-)
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 logger = logging.getLogger("agent.run.runtime")
+
 
 # ── Agent 构建与消息归一化 ───────────────────────────────────
 
@@ -79,8 +79,13 @@ def _ensure_repo_memory_for_mapping(repo: Any, mapping: Any) -> None:
 
     仓库记忆的初始化只做 “没有则创建” 的动作。后续 coding、planning、review
     任务完成后的经验总结，由 repo_memory.py 负责结构化写回。
+
+    Args:
+        repo: Any: 仓库对象。
+        mapping: Any: 仓库映射对象。
     """
 
+    # 初始化仓库级长期记忆
     created = ensure_repo_memory_initialized(
         store=get_langgraph_store(),
         repo=repo,
@@ -94,9 +99,13 @@ def _ensure_repo_memory_for_mapping(repo: Any, mapping: Any) -> None:
 def _message_content_to_text(content: Any) -> str:
     """把 LangChain message.content 规整成可展示文本。
 
-    LangChain/DeepAgents 的 message.content 可能是普通字符串，也可能是多模态
-    content block 列表。runtime 在提取最终回答、技术方案和记忆摘要时，只需要
-    文本部分，所以这里统一转换，避免每个调用点重复兼容不同消息结构。
+    LangChain/DeepAgents 的 message.content 可能是普通字符串，也可能是多模态 content block 列表。
+    runtime 在提取最终回答、技术方案和记忆摘要时，只需要文本部分，所以这里统一转换，避免每个调用点重复兼容不同消息结构。
+
+    Args:
+        content: LangChain消息内容
+    Returns:
+        str: 规整后的文本内容
     """
     if isinstance(content, str):
         return content.strip()
@@ -106,6 +115,7 @@ def _message_content_to_text(content: Any) -> str:
             if isinstance(item, str):
                 parts.append(item)
             elif isinstance(item, dict):
+                # LangChain/OpenAI 风格的分块内容通常把文本放在 text 或 content 字段里
                 text = item.get("text") or item.get("content")
                 if text:
                     parts.append(str(text))
@@ -118,6 +128,11 @@ def _extract_final_assistant_text(messages: list[dict[str, Any]]) -> str:
 
     任务结束后，仓库记忆更新只需要最终总结，不应该把中间工具消息、中间状态或
     调试事件写进长期记忆。因此这里从后往前找最后一条有正文的 AI/assistant 消息。
+
+    Args:
+        messages: list[dict[str, Any]]: DeepAgent 消息列表。
+    Returns:
+        str: 最后一条 assistant 消息的文本内容。
     """
     for message in reversed(messages):
         message_type = str(message.get("type") or "").lower()
@@ -132,12 +147,15 @@ def _extract_final_assistant_text(messages: list[dict[str, Any]]) -> str:
 def _extract_best_plan_text(messages: list[dict[str, Any]]) -> str:
     """从多条 assistant 消息中提取最完整的技术方案。
 
-    DeepAgents 有时会把“完整方案”和“是否确认实施该方案？”拆成不同 assistant
-    消息。如果只取最后一条，前端就只剩确认句。方案任务应优先选择包含方案关键词
-    且篇幅最长的 assistant 消息；没有命中时再退回最长 assistant 消息。
+    DeepAgents 有时会把“完整方案”和“是否确认实施该方案？”拆成不同 assistant消息。
+    如果只取最后一条，前端就只剩确认句。方案任务应优先选择包含方案关键词且篇幅最长的 assistant 消息；没有命中时再退回最长 assistant 消息。
 
-    这个函数只用于兜底校验和仓库记忆更新。前端实时展示不依赖它，前端看到的正文
-    来自 streaming_runtime.py 对 DeepAgents V3 文本 chunk 的实时消费。
+    这个函数只用于兜底校验和仓库记忆更新。前端实时展示不依赖它，前端看到的正文来自 streaming_runtime.py 对 DeepAgents V3 文本 chunk 的实时消费。
+
+    Args:
+        messages: list[dict[str, Any]]: DeepAgent 消息列表。
+    Returns:
+        str: 最佳技术方案文本。
     """
 
     candidates: list[str] = []
@@ -163,9 +181,11 @@ def _extract_best_plan_text(messages: list[dict[str, Any]]) -> str:
         "数据结构",
         "是否确认实施该方案",
     ]
+    # 过滤出包含方案关键词的消息
     plan_candidates = [
         text for text in candidates if any(keyword in text for keyword in plan_keywords)
     ]
+    # 优先选择包含方案关键词的消息
     selected_pool = plan_candidates or candidates
     return max(selected_pool, key=len).strip()
 
@@ -181,9 +201,18 @@ def _build_agent_user_content(*, repo_url: str, task_kind: str, prompt: str, app
 
     如果是用户确认后的 coding 任务，`approved_plan` 会作为实施依据一并传入。
     这样 Agent 执行的是上一轮完整技术方案，而不是“确认实施”这几个字。
+
+    Args:
+        repo_url: str: 仓库 URL。
+        task_kind: str: 任务类型，可以是 "coding" 或其他非 coding 任务类型。
+        prompt: str: 用户任务描述。
+        approved_plan: str | None: 用户确认的技术方案，用于 coding 任务。
+    Returns:
+        str: 构造的用户内容。
     """
     if task_kind == "coding":
         plan_instruction = ""
+        # 如果有 approved_plan，则添加到用户内容中
         if approved_plan:
             plan_instruction = f"\n\n用户已经确认以下技术方案，请按该方案实施；如执行中发现必要调整，请在最终总结中说明：\n{approved_plan}"
         task_instruction = (
@@ -213,6 +242,14 @@ def _build_plan_user_content(*, repo_url: str, prompt: str, previous_plan: str |
 
     `previous_plan + revision_prompt` 用于“修改上一版方案”的场景。此时不能只把
     新要求发给模型，否则模型容易只补充一小段；这里明确要求重新输出完整新版方案。
+
+    Args:
+        repo_url: str: 仓库 URL。
+        prompt: str: 用户任务描述。
+        previous_plan: str | None: 上一版技术方案，用于修改方案场景。
+        revision_prompt: str | None: 修改要求，用于修改方案场景。
+    Returns:
+        str: 构造的用户内容。
     """
     if previous_plan and revision_prompt:
         return (
@@ -260,6 +297,11 @@ def _is_approval_prompt(prompt: str) -> bool:
 
     这里故意使用本地规则判断，而不是交给模型判断，因为它会影响是否允许进入
     coding 任务，属于权限相关的流程控制。
+
+    Args:
+        prompt: str: 用户输入的提示文本。
+    Returns:
+        bool: 如果用户明确要求开始实施，则返回 True，否则返回 False。
     """
     normalized = " ".join((prompt or "").lower().split())
     approval_phrases = [
@@ -283,13 +325,17 @@ def _is_approval_prompt(prompt: str) -> bool:
 def _is_plan_revision_prompt(prompt: str) -> bool:
     """判断用户是否明确要求修改上一版技术方案。
 
-    这里必须比任务分类更严格。原因是当前会话中可能存在一份“等待确认”的方案，
-    但用户后续输入不一定是在修改方案，也可能只是普通问答，例如：
-    “当前项目的记忆文件内容是什么？”。这类问题不能因为历史里有待确认方案，
-    就被强行改写成“重新生成技术方案”。
+    这里必须比任务分类更严格。
+    原因是当前会话中可能存在一份“等待确认”的方案，但用户后续输入不一定是在修改方案，也可能只是普通问答，
+    例如：“当前项目的记忆文件内容是什么？”。这类问题不能因为历史里有待确认方案，就被强行改写成“重新生成技术方案”。
 
     换句话说：只有用户明确表达“修改/补充/重新生成方案”时，才会触发方案修订。
     这能避免历史中的待确认方案劫持后续普通问答。
+
+    Args:
+        prompt: str: 用户输入的提示文本。
+    Returns:
+        bool: 如果用户明确要求修改上一版技术方案，则返回 True，否则返回 False。
     """
     normalized = " ".join((prompt or "").lower().split())
     revision_markers = [
@@ -320,17 +366,23 @@ def _message_metadata(message: dict[str, Any]) -> dict[str, Any]:
     """解析 checkpoint 消息包装出来的 metadata。
 
     当前前端历史和方案确认都不再读取 Store.thread_messages。
-    这个函数只负责兼容 checkpoint_history 返回的字典结构：metadata 可能是 dict，
-    也可能是旧数据中的 JSON 字符串。
+    这个函数只负责兼容 checkpoint_history 返回的字典结构：metadata 可能是 dict，也可能是旧数据中的 JSON 字符串。
 
     目前最重要的 metadata 是 source_prompt。它用于从“确认实施”恢复出上一轮
     真正的用户需求，避免把“确认”当成 coding 需求传给 Agent。
+
+    Args:
+        message: dict[str, Any]: checkpoint 消息。
+    Returns:
+        dict[str, Any]: 解析出的 metadata 字典。
     """
+    # 兼容旧数据
     metadata = message.get("metadata")
     if isinstance(metadata, dict):
         return metadata
     if isinstance(metadata, str) and metadata.strip():
         try:
+            # 尝试解析 JSON 字符串
             parsed = json.loads(metadata)
         except ValueError:
             return {}
@@ -359,6 +411,11 @@ def _is_confirmable_plan_text(text: str) -> bool:
 
     判断规则宁可保守，也不要激进。误判为“不是方案”最多让用户重新说明；误判为
     “可实施方案”则可能把普通回答带入 coding 流程，风险更高。
+
+    Args:
+        text: str: assistant 正文文本。
+    Returns:
+        bool: 如果 assistant 正文像一份可确认实施的方案，则返回 True，否则返回 False。
     """
     stripped = text.strip()
     if not stripped:
@@ -422,6 +479,12 @@ def _plan_source_prompt(message: dict[str, Any], fallback: str) -> str:
 
     如果历史消息缺少 metadata，就使用 fallback。这个 fallback 通常来自最近一条
     非确认类用户消息，保证旧数据也能继续运行。
+
+    Args:
+        message: dict[str, Any]: checkpoint 消息。
+        fallback: str: 如果历史消息缺少 metadata，就使用 fallback。
+    Returns:
+        str: 解析出的 source_prompt。
     """
     metadata = _message_metadata(message)
     source_prompt = str(metadata.get("source_prompt") or "").strip()
@@ -441,6 +504,12 @@ def _latest_non_approval_user_prompt(thread_id: str, fallback: str) -> str:
     3. “确认实施”
 
     第 3 步进入 coding 时，真正要传给 Agent 的需求应该是第 1 步，而不是第 3 步。
+
+    Args:
+        thread_id: str: 会话 ID
+        fallback: str: 如果历史消息缺少 metadata，就使用 fallback。
+    Returns:
+        str: 解析出的 source_prompt。
     """
     for message in reversed(visible_checkpoint_messages(thread_id)):
         if message.get("author") != "user":
@@ -456,6 +525,12 @@ def _revision_source_prompt(*, previous_source_prompt: str, revision_prompt: str
 
     source_prompt 是后续 coding 阶段还原完整任务目标的依据。多次修改方案时，
     这里会把补充要求追加到原始需求后面，避免后续实施阶段丢失用户逐轮补充的信息。
+
+    Args:
+        previous_source_prompt: str: 上一版 source_prompt。
+        revision_prompt: str: 本次修订要求。
+    Returns:
+        str: 合并后的 source_prompt。
     """
     revision_prompt = revision_prompt.strip()
     if not revision_prompt:
@@ -506,6 +581,8 @@ def initialize_task_record(*, repo_url: str, prompt: str, thread_id: str | None 
 
     thread_id = thread_id or str(uuid.uuid4())
     repo = parse_github_repo_url(repo_url)
+
+    # 写入业务索引
     get_store().upsert_thread(
         thread_id=thread_id,
         title=prompt[:80] or f"GitHub: {repo.owner}/{repo.repo}",
@@ -534,6 +611,8 @@ def run_workspace_listing_task(*, repo_url: str, prompt: str, thread_id: str | N
     """
 
     should_record_user_message = thread_id is None
+
+    # 创建任务记录
     thread_id = initialize_task_record(
         repo_url=repo_url,
         prompt=prompt,
@@ -544,7 +623,10 @@ def run_workspace_listing_task(*, repo_url: str, prompt: str, thread_id: str | N
     # 每轮先清掉上一轮的临时事件；任务历史本身仍保存在 runs/checkpoint 中。
     store.clear_run_events(thread_id)
     run_id = str(uuid.uuid4())
+
+    # 记录运行开始
     store.record_run(run_id=run_id, thread_id=thread_id, status="running")
+
     # 即使不调用模型，也统一经过 Workspace 和 LocalShellBackend 的路径边界检查。
     workspace = Workspace(WORKSPACE_ROOT)
     backend = LocalShellBackend(workspace)
@@ -576,12 +658,7 @@ def run_workspace_listing_task(*, repo_url: str, prompt: str, thread_id: str | N
             finished=True,
         )
 
-        logger.exception(
-            "工作区项目查询失败：thread_id=%s run_id=%s error=%s",
-            thread_id,
-            run_id,
-            mask_token(str(exc)),
-        )
+        logger.exception("工作区项目查询失败：thread_id=%s run_id=%s", thread_id, run_id)
         raise
 
 
@@ -604,15 +681,19 @@ def _run_git_with_fetch_head_retry(backend: LocalShellBackend, command: str, *, 
         Any: 命令输出结果
     """
     result = backend.run(command, cwd=cwd, timeout=timeout)
+    # 合并标准输出和标准错误
     combined_output = f"{result.stdout}\n{result.stderr}".lower()
+
     # 只对已知、可恢复的 FETCH_HEAD 占用错误重试；认证失败、冲突等其他错误
     # 必须保留原结果交给上层处理，不能通过盲目重试掩盖真实原因。
     if result.exit_code == 0 or "cannot open .git/fetch_head" not in combined_output:
         return result
 
+    # 删除 FETCH_HEAD 文件后重试
     fetch_head = backend.workspace.resolve(Path(cwd) / ".git" / "FETCH_HEAD")
     logger.warning("检测到 FETCH_HEAD 权限异常，准备删除后重试： %s", fetch_head)
     try:
+        # 删除 FETCH_HEAD 文件
         fetch_head.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning("删除 FETCH_HEAD 失败：%s", exc)
@@ -630,6 +711,8 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
     仓库映射和仓库记忆，保证后续 planning/coding 任务能复用同一个本地目录。
     """
     should_record_user_message = thread_id is None
+
+    # 创建任务记录
     thread_id = initialize_task_record(
         repo_url=repo_url,
         prompt=prompt,
@@ -637,6 +720,8 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
         record_user_message=should_record_user_message,
     )
     store = get_store()
+
+    # 每轮先清掉上一轮的临时事件；任务历史本身仍保存在 runs/checkpoint 中。
     store.clear_run_events(thread_id)
     run_id = str(uuid.uuid4())
 
@@ -645,7 +730,10 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
     repo = parse_github_repo_url(repo_url)
     workspace = Workspace(WORKSPACE_ROOT)
     backend = LocalShellBackend(workspace)
+
+    # 发现仓库映射
     mapping = discover_repo_mapping(repo_url=repo.clone_url, workspace=workspace, store=store)
+    # 确保仓库记忆
     _ensure_repo_memory_for_mapping(repo, mapping)
     # project_dir 是跨平台虚拟目录；target 才是当前宿主机上的真实路径。
     relative_dir = Path(mapping.project_dir)
@@ -666,6 +754,7 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
             record_event(thread_id, "sync", "同步远程仓库", kind="execute", status="in_progress")
             remote_result = backend.run(f"git remote set-url origin {clone_url}", cwd=str(relative_dir), timeout=60)
 
+            # 强制 fetch 所有远程分支，避免后续 pull 拉取失败
             fetch_result = _run_git_with_fetch_head_retry(
                 backend,
                 "git fetch --all",
@@ -673,12 +762,14 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
                 timeout=300,
             )
 
+            # 强制 pull 当前跟踪分支，避免自动产生 merge commit
             pull_result = _run_git_with_fetch_head_retry(
                 backend,
                 "git pull --ff-only",
                 cwd=str(relative_dir),
                 timeout=300,
             )
+
             # 汇总三条命令，下面统一检查第一条失败结果并进行脱敏。
             outputs = [remote_result, fetch_result, pull_result]
         else:
@@ -689,6 +780,7 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
             clone_result = backend.run(f"git clone {clone_url} {target.name}", cwd="projects", timeout=600)
             outputs = [clone_result]
 
+        # 检查 Git 命令是否失败
         failed = next((result for result in outputs if result.exit_code), None)
         if failed is not None:
             # Git 命令的 stdout/stderr 可能包含 token，所以对外展示和日志都要脱敏。
@@ -729,8 +821,6 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
 
 
 # ── 方案生成与通用 Agent 主流程 ──────────────────────────────
-
-
 def run_plan_response_task(
         *,
         repo_url: str,
@@ -749,10 +839,21 @@ def run_plan_response_task(
 
     这个函数始终以 planning task_kind 运行。即使用户原始需求看起来像 coding，
     只要还没有确认方案，就只能生成方案，不能改文件、不能提交、不能创建 PR。
+
+    Args:
+        repo_url : GitHub 仓库 URL
+        prompt : 用户输入的需求
+        thread_id : 任务 ID
+        previous_plan_message : 上一版方案消息
+        revision_prompt : 修订要求
+    Returns:
+         任务结果
     """
 
     thread_id = thread_id or str(uuid.uuid4())
     store = get_store()
+
+    # 每轮先清掉上一轮的临时事件；任务历史本身仍保存在 runs/checkpoint 中。
     store.clear_run_events(thread_id)
     logger.info("开始生成技术方案：thread_id=%s repo_url=%s", thread_id, repo_url)
     record_event(thread_id, "created", "任务已创建", status="completed")
@@ -771,6 +872,7 @@ def run_plan_response_task(
             revision_prompt=revision_prompt or prompt,
         )
 
+    # 更新任务记录
     store.upsert_thread(
         thread_id=thread_id,
         title=(revision_prompt or prompt)[:80] or f"GitHub: {repo.owner}/{repo.repo}",
@@ -800,17 +902,20 @@ def run_plan_response_task(
             run_id=run_id,
             content=_build_plan_user_content(
                 repo_url=repo.clone_url,
-                prompt=_plan_source_prompt(previous_plan_message, prompt)
-                if previous_plan_message is not None
-                else prompt,
+                # plan_source_prompt 已合并原始需求与本轮修订要求，后续确认实施时也复用它。
+                prompt=plan_source_prompt,
                 previous_plan=previous_plan_text,
                 revision_prompt=revision_prompt,
             ),
             task_kind="planning",
             repo_url=repo.clone_url,
         )
+
+        # 结束事件流
         store.finish_open_run_events(thread_id, status="completed")
         messages = result.get("messages", [])
+
+        # 提取最佳方案文本
         plan_text = _extract_best_plan_text(messages)
         if not plan_text:
             raise RuntimeError("技术方案生成失败：模型没有返回可用方案")
@@ -819,15 +924,22 @@ def run_plan_response_task(
             # 这是产品流程兜底：方案任务必须以确认问题结束，方便用户下一轮输入“确认实施”。
             # 正常情况下 prompt 已要求模型输出该句；这里再补一次，避免模型漏掉。
             plan_text = f"{plan_text.rstrip()}\n\n是否确认实施该方案？"
+
+        # 更新仓库记忆
         update_repo_memory_from_text(
             store=get_langgraph_store(),
             repo=repo,
             update=RepoMemoryUpdate(task_kind="planning", final_text=plan_text),
         )
+
+        # 如果有上一版方案，则更新上一版方案为过时状态
         if previous_plan_message is not None:
             _supersede_plan_message(previous_plan_message)
+        # 更新任务记录
         store.update_thread_status(thread_id, "completed")
+        # 记录运行结果
         store.record_run(run_id=run_id, thread_id=thread_id, status="completed", finished=True)
+        # 记录事件
         record_event(thread_id, "plan", "技术方案已输出，等待确认", kind="other", status="completed")
         logger.info("技术方案输出完成：thread_id=%s", thread_id)
         return {
@@ -836,9 +948,13 @@ def run_plan_response_task(
             "status": "completed",
         }
     except Exception as exc:
+        # 结束事件流
         store.finish_open_run_events(thread_id, status="error")
+        # 更新任务记录
         store.update_thread_status(thread_id, "failed")
+        # 记录事件
         record_event(thread_id, "failed", "技术方案生成失败", status="error", detail=mask_token(str(exc)))
+        # 记录运行结果
         store.record_run(
             run_id=run_id,
             thread_id=thread_id,
@@ -846,12 +962,7 @@ def run_plan_response_task(
             error=mask_token(str(exc)),
             finished=True,
         )
-        logger.exception(
-            "技术方案生成失败：thread_id=%s run_id=%s error=%s",
-            thread_id,
-            run_id,
-            mask_token(str(exc)),
-        )
+        logger.exception("技术方案生成失败：thread_id=%s run_id=%s", thread_id, run_id)
         raise
 
 
@@ -899,8 +1010,9 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
     display_prompt = prompt
     coding_prompt = prompt
 
+    # 如果当前会话有未确认的技术方案，则进入确认流程
     if existing_thread and _is_approval_prompt(prompt):
-        # 讲课重点：
+        # 重点：
         # “确认实施”不能直接等价于“执行当前这几个字”。
         # 必须先回到当前 thread 的历史消息里，找到最近一条仍在等待确认的技术方案；
         # 再用该方案的 source_prompt 还原用户最初的开发需求，避免把“确认”当作新需求执行。
@@ -910,6 +1022,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
             # 再从历史用户消息反向寻找最近一条非确认文本。
             metadata = _message_metadata(plan_message)
             approved_plan_text = str(plan_message.get("content") or "")
+            # coding_prompt 是传给 Agent 的执行目标。
             coding_prompt = str(
                 metadata.get("source_prompt")
                 or _latest_non_approval_user_prompt(thread_id, existing_thread.get("user_prompt") or prompt)

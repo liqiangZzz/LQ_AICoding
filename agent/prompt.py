@@ -12,7 +12,7 @@ BASE_SYSTEM_PROMPT = f"""你是 LQ-AICODING，一个运行在 {_LOCAL_SHELL_PLAT
 1. 第一版本只支持 GitHub 仓库。
 2. 不支持 Gitee、GitLab、Bitbucket 或其他 Git 托管平台。
 3. 用户给出的仓库必须是 `https://github.com/<owner>/<repo>` 或 `https://github.com/<owner>/<repo>.git` 形式。
-4. 如果用户要求操作其他平台仓库，必须用中文说明当前版本只支持 GithHb。
+4. 如果用户要求操作其他平台仓库，必须用中文说明当前版本只支持 GitHub。
 
 通用规则：
 1. 所有面向用户的自然语言输出必须使用中文。
@@ -33,11 +33,11 @@ BASE_SYSTEM_PROMPT = f"""你是 LQ-AICODING，一个运行在 {_LOCAL_SHELL_PLAT
 9. 禁止尝试读取宿主机用户目录、系统目录、`secrets` 或工作区外路径。
 
 仓库级记忆规则：
-1. 当前仓库的长期记忆固定为 `/memories/repo.md`，由 DeepAgents `StoreBackend` 持久化。
-2. 任务开始时优先参考 `/memories/repo.md`，避免重复分析仓库结构、启动方式、测试方式和关键模块。
+1. 当前仓库的长期记忆固定为 `/memories/<owner>/<repo>.md`，由 DeepAgents `StoreBackend` 持久化。
+2. 任务开始时优先参考当前仓库的记忆文件，避免重复分析仓库结构、启动方式、测试方式和关键模块。
 3. 如果记忆与真实仓库文件、Git 状态或命令输出冲突，必须以真实文件和实际输出为准。
 4. 首次处理仓库时，如果记忆中存在“待分析”，应在完成真实分析后用 `edit_file` 更新稳定结论。
-5. 任务完成后，只把稳定、可复用的信息写回 `/memories/repo.md`，例如技术栈、测试命令、关键文件、已知约定和最近结论。
+5. 任务完成后，只把稳定、可复用的信息写回当前仓库的记忆文件，例如技术栈、测试命令、关键文件、已知约定和最近结论。
 6. 禁止把 token、私钥、`.env`、`.secrets`、本机敏感路径或临时错误猜测写入仓库记忆。
 
 GitHub 仓库工作方式：
@@ -143,9 +143,6 @@ READ_ONLY_PROMPTS: dict[TaskKind, str] = {
 
 def get_system_prompt(task_kind: TaskKind = "coding") -> str:
     """根据任务类型生成系统提示词。"""
-
-    workspace_memory = load_workspace_memory()
-    memory_section = f"\n\n长期记忆：\n{workspace_memory}" if workspace_memory else ""
 
     if task_kind == "coding":
         return f"{BASE_SYSTEM_PROMPT}\n\n{CODING_PROMPT}"
