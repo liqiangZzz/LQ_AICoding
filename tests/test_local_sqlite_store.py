@@ -11,6 +11,9 @@ class LocalSqliteStoreTests(unittest.TestCase):
         self.store = LocalSqliteStore(Path(self.temp_dir.name) / "store.sqlite")
 
     def tearDown(self) -> None:
+        # Windows 不允许删除仍被 SQLite 连接占用的数据库文件；
+        # 先显式关闭 Store，再清理临时目录，macOS 与 Windows 行为才一致。
+        self.store.close()
         self.temp_dir.cleanup()
 
     def test_run_event_is_upserted(self) -> None:
