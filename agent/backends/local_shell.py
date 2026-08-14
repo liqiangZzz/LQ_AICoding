@@ -2,6 +2,7 @@
 
 本模块在 macOS 和 Windows 上对 DeepAgents 暴露统一的虚拟文件路径和命令执行接口。
 业务工具通过 `/projects` 等虚拟路径访问受控工作区。
+详细目录、命令和跨平台设计见同目录 `local_shell_说明.md`。
 """
 
 import fnmatch
@@ -75,17 +76,24 @@ def _resolve_configured_subpath(root: Path, value: str, *, env_name: str) -> Pat
     ``C:/...``，或在 Windows 上漏掉反斜杠形式的路径穿越。
     """
 
+    # 去除首尾空格，将反斜杠替换为正斜杠
     normalized = value.strip().replace("\\", "/")
     if not normalized:
         raise ValueError(f"{env_name} cannot be empty")
+
+    # 绝对路径检查
     if PurePosixPath(normalized).is_absolute() or PureWindowsPath(normalized).is_absolute():
         raise ValueError(f"{env_name} must be relative to LOCAL_SHELL_WORKSPACE")
+    # 路径穿越检查
     parts = PurePosixPath(normalized).parts
+    # 检查路径中是否包含 ..
     if ".." in parts:
         raise ValueError(f"{env_name} cannot escape LOCAL_SHELL_WORKSPACE")
 
+    # 解析路径
     resolved = (root / Path(*parts)).resolve()
     try:
+        # 检查解析后的路径是否在 root 内
         resolved.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"{env_name} cannot escape LOCAL_SHELL_WORKSPACE") from exc
@@ -97,9 +105,13 @@ def _mask_token(text: str) -> str:
     把文本中的 GitHub Token 替换为 ***，防止泄露到日志和返回值里。
     """
     masked = text
+    # 遍历所有可能的 Token 环境变量
     for token_name in ("GITHUB_TOKEN", "GH_TOKEN", "SCM_GITHUB_TOKEN"):
+        # 获取环境变量值并去除首尾空格
         token = get_env(token_name).strip()
+        # 如果环境变量值不为空
         if token:
+            # 替换文本中的 Token 为 ***
             masked = re.sub(re.escape(token), "***", masked)
     return masked
 
@@ -109,11 +121,11 @@ class CommandResult:
     """
     命令执行结果，兼容旧版 Git 工具。
     """
-    command: str
-    stdout: str
-    stderr: str
-    exit_code: int
-    cwd: str
+    command: str # 命令
+    stdout: str # 标准输出
+    stderr: str # 错误输出
+    exit_code: int # 退出码
+    cwd: str # 当前工作目录
 
 
 class LocalShellBackend(BaseSandbox):
@@ -127,7 +139,7 @@ class LocalShellBackend(BaseSandbox):
     4. 通过 `GIT_ASKPASS` 实现 GitHub Git 非交互认证；
     5. 保留 `run/read_file/write_file/list_files` 旧接口。
 
-    这个类不是“完全可信的 shell 代理”，而是课程项目里的受控本地执行层。
+    这个类不是“完全可信的 shell 代理”，而是这个项目里的受控本地执行层。
     真正企业生产环境还应叠加容器隔离、系统用户隔离、审计日志和更完整的权限策略。
     """
 
@@ -197,8 +209,10 @@ class LocalShellBackend(BaseSandbox):
         self.tmp_dir = self.root / "tmp"
         self.logs_dir = self.root / "logs"
         self.secrets_dir = self.root / "secrets"  # 存放 Git askpass 脚本等敏感文件
+        # 共享 Python 虚拟环境目录
         self.shared_python_venv = _resolve_configured_subpath(
             self.root,
+            # 默认值为 runtimes/python/default/.venv
             os.environ.get(
                 "LOCAL_SHELL_SHARED_PYTHON_VENV",
                 "runtimes/python/default/.venv",
@@ -212,16 +226,19 @@ class LocalShellBackend(BaseSandbox):
             "LOCAL_SHELL_ENABLE_COMMAND_GUARD",
             os.environ.get("LOCAL_SHELL_COMMAND_GUARD_ENABLED", "true"),
         )
+        # 命令安全守卫默认开启
         self.command_guard_enabled = (
                 guard_value.strip().lower() not in {"0", "false", "no"}
         )
         self._venv_error: str | None = None
+        # 确保工作区布局
         self._ensure_layout()
 
     @property
     def id(self) -> str:
         """返回不暴露真实工作区路径的稳定 Sandbox 标识。"""
 
+        # 使用工作区根目录的 SHA-256 值作为标识
         root_digest = hashlib.sha256(os.fsencode(self.root)).hexdigest()[:16]
         return f"local-shell-{root_digest}"
 
@@ -242,6 +259,13 @@ class LocalShellBackend(BaseSandbox):
 
         注意：这个方法不向上抛异常，而是按 DeepAgents 协议返回结构化结果。
         模型可以根据 exit_code 和 output 继续修正命令或解释失败原因。
+
+        Args:
+            command: 要执行的命令。
+            timeout : 命令执行超时时间，单位为秒。默认为 None，表示使用默认超时时间。
+
+        Returns:
+            ExecuteResponse: 命令执行结果，包含输出、退出码和截断标志。
         """
 
         if self.read_only and not self._read_only_command_allowed(command):
@@ -258,6 +282,7 @@ class LocalShellBackend(BaseSandbox):
             if denied:
                 return ExecuteResponse(output=f"命令被拒绝：{denied}", exit_code=126, truncated=False)
             try:
+                # 命令改写
                 command = normalize_safe_command(command)
             except PermissionError as exc:
                 return ExecuteResponse(output=f"命令被拒绝：{exc}", exit_code=126, truncated=False)
@@ -265,6 +290,7 @@ class LocalShellBackend(BaseSandbox):
         try:
             # 命令预处理也可能因为路径越界而失败，因此包含在结构化异常处理内。
             prepared_command = self._prepare_command(command)
+
             # shell=True 在 macOS 上使用 /bin/sh，在 Windows 上使用 COMSPEC（通常为 cmd.exe）。
             completed = subprocess.run(
                 prepared_command,  # 最终执行的命令字符串，已经完成虚拟路径转换、Git 认证注入等预处理
@@ -317,12 +343,12 @@ class LocalShellBackend(BaseSandbox):
             if not resolved.is_dir():
                 return LsResult(entries=None, error=f"当前路径不是目录：{path}")
             return LsResult(
-                entries=[
+                entries=[ # type: ignore
                     {
-                        "path": self._to_virtual_path(child),
-                        "is_dir": child.is_dir(),
-                        "size": child.stat().st_size if child.is_file() else 0,
-                        "modified_at": datetime.fromtimestamp(child.stat().st_mtime, UTC).isoformat(),
+                        "path": self._to_virtual_path(child), # 虚拟路径
+                        "is_dir": child.is_dir(), # 是否目录
+                        "size": child.stat().st_size if child.is_file() else 0, # 文件大小
+                        "modified_at": datetime.fromtimestamp(child.stat().st_mtime, UTC).isoformat(), # 修改时间
                     }
                     for child in sorted(resolved.iterdir(), key=lambda p: p.name.lower())
                 ]
@@ -346,6 +372,7 @@ class LocalShellBackend(BaseSandbox):
             if resolved.is_dir():
                 return ReadResult(error=f"当前路径是目录，不能读取为文件：{file_path}")
 
+            # 读取文件内容
             raw = resolved.read_bytes()
             try:
                 text = raw.decode("utf-8")
@@ -355,9 +382,12 @@ class LocalShellBackend(BaseSandbox):
                 text = raw.decode("latin-1")
                 encoding = "latin-1"
 
+            # 按行分割内容
             lines = text.splitlines()
             if offset or limit:
                 text = "\n".join(lines[int(offset): int(offset) + int(limit)])
+
+            # 获取文件元数据
             stat = resolved.stat()
             return ReadResult(
                 file_data={
@@ -378,7 +408,7 @@ class LocalShellBackend(BaseSandbox):
         try:
             # 解析虚拟路径为实际路径
             resolved = self._resolve_virtual_path(file_path)
-            #  写入前检查
+            # 写入前检查
             denied = self._write_deny_reason(resolved)
             if denied:
                 return WriteResult(error=denied)
@@ -398,7 +428,17 @@ class LocalShellBackend(BaseSandbox):
             new_string: str,
             replace_all: bool = False,
     ) -> EditResult:
-        """替换文件中的文本 —— 相当于精细化的 find & replace。"""
+        """替换文件中的文本 —— 相当于精细化的 find & replace。
+
+        Args:
+            file_path (str): 文件路径。
+            old_string (str): 要替换的旧字符串。
+            new_string (str): 新字符串。
+            replace_all (bool, optional): 是否替换所有出现的旧字符串。默认为 False，只替换第一个。
+
+        Returns:
+            EditResult: 文件修改结果，包含修改的文件路径和替换的行数。
+        """
         if self.read_only:
             return EditResult(error="当前任务是只读模式，禁止修改文件")
         try:
@@ -410,16 +450,23 @@ class LocalShellBackend(BaseSandbox):
             # 检查文件是否为目录
             if resolved.is_dir():
                 return EditResult(error=f"当前路径是目录，不能修改为文件：{file_path}")
+
+            # 写入前检查
             denied = self._write_deny_reason(resolved)
             if denied:
                 return EditResult(error=denied)
+            # 读取文件内容
             text = resolved.read_text(encoding="utf-8")
+            # 统计旧字符串出现次数
             count = text.count(old_string)
+
             if count == 0:
                 return EditResult(error=f"没有找到要替换的内容：{old_string}")
             if count > 1 and not replace_all:
                 return EditResult(error=f"要替换的内容出现 {count} 次，请设置 replace_all=True 或提供更精确片段。")
+            # 替换内容
             updated = text.replace(old_string, new_string, -1 if replace_all else 1)
+            # 写入修改后的内容
             resolved.write_text(updated, encoding="utf-8", newline="")
             return EditResult(path=file_path, occurrences=count if replace_all else 1)
         except PermissionError as exc:
@@ -613,7 +660,6 @@ class LocalShellBackend(BaseSandbox):
         )
 
     # ── 初始化相关 ───────────────────────────────────────────
-
     def _ensure_layout(self) -> None:
         """创建工作区目录结构，写入 workspace 标记文件。
 
@@ -683,6 +729,7 @@ class LocalShellBackend(BaseSandbox):
             "security.md": "# 安全规范\n\n- 不读取或输出 .secrets 目录内容。\n- 不提交密钥、Token、私钥或 .env 文件。\n",
         }
         for name, content in defaults.items():
+            # 创建策略文件
             path = self.policies_dir / name
             if not path.exists():
                 path.write_text(content, encoding="utf-8")
@@ -695,16 +742,21 @@ class LocalShellBackend(BaseSandbox):
         """
         if self._venv_python_path().exists():
             return
+
+        # 检查 Python 可执行文件
         python_names = (
             ("py", "python", "python3")
             if self.platform == "windows"
             else ("python3", "python")
         )
+
+        # 检查 Python 可执行文件
         python = next((path for name in python_names if (path := shutil.which(name))), None)
         if not python:
             self._venv_error = "python executable not found on PATH"
             return
         try:
+            # 创建虚拟环境
             completed = subprocess.run(
                 [python, "-m", "venv", str(self.shared_python_venv)],
                 cwd=self.root,
@@ -734,9 +786,12 @@ class LocalShellBackend(BaseSandbox):
         - Git 命令仍然可以走标准 HTTPS 认证流程；
         - 后端可以统一通过 `_execution_env()` 注入认证环境变量。
         """
+        # 创建 AskPass 脚本
         askpass = self._askpass_path()
         if askpass.exists():
             return
+
+        # Windows 系统，写入 AskPass 脚本
         if self.platform == "windows":
             askpass.write_text(
                 "@echo off\n"
@@ -750,6 +805,7 @@ class LocalShellBackend(BaseSandbox):
                 newline="\r\n",
             )
             return
+        # Mac 系统，写入 AskPass 脚本
         askpass.write_text(
             "#!/bin/sh\n"
             "case \"$1\" in\n"
@@ -781,15 +837,26 @@ class LocalShellBackend(BaseSandbox):
 
         旧工具可能传入 `.`、`projects/a.py` 等形式。
         后端内部统一转换成 `/projects/a.py` 这种虚拟路径，后续再走同一套解析和权限检查。
+
+        Args:
+            path : 路径
+        Returns:
+            str: 虚拟路径
         """
         raw = str(path).strip()
         if raw in {"", "."}:
             return "/"
+
+        # 展开用户主目录
         candidate = Path(raw).expanduser()
+        # 如果是绝对路径，转换成虚拟路径
         if candidate.is_absolute():
+            # 转换成虚拟路径
             return self._to_virtual_path(candidate)
+        # 如果路径以 / 开头，表示已经是虚拟路径
         if raw.startswith("/"):
             return raw
+        # 否则，加上 / 前缀
         return "/" + raw
 
     def _resolve_virtual_path(self, path: str | os.PathLike[str]) -> Path:
@@ -798,8 +865,11 @@ class LocalShellBackend(BaseSandbox):
         这是文件读写权限的关键入口。路径最终必须解析成真实路径，
         并确认它仍然位于 `self.root` 工作区内。
         """
+        # 路径标准化
         raw = str(path).strip() or "/"
+        # 去掉前缀 /
         normalized = raw.removeprefix("/")
+        # 解析成真实路径
         resolved = (self.root / normalized).resolve()
         # 安全检查：必须落在工作区范围内
         if not self._is_under_root(resolved):
@@ -812,15 +882,22 @@ class LocalShellBackend(BaseSandbox):
         DeepAgents 和模型不应该直接感知宿主机真实磁盘路径。
         返回虚拟路径可以降低环境耦合，也能避免把本机目录结构暴露给模型上下文。
         """
+
+        # 解析成真实路径
         resolved = path.resolve()
+        # 安全检查：必须落在工作区范围内
         if not self._is_under_root(resolved):
             raise PermissionError(f"path outside local workspace is denied: {path}")
+
+        # 计算相对路径
         rel = resolved.relative_to(self.root).as_posix()
+        # 转换成虚拟路径
         return "/" + rel if rel else "/"
 
     def _is_under_root(self, path: Path) -> bool:
         """判断路径是否在工作区根目录之下（安全工作区边界检查）。"""
         try:
+            # 计算相对路径
             path.relative_to(self.root)
             return True
         except ValueError:
@@ -829,6 +906,7 @@ class LocalShellBackend(BaseSandbox):
     def _is_under(self, path: Path, parent: Path) -> bool:
         """判断 path 是否在 parent 目录之下。"""
         try:
+            # 计算相对路径
             path.relative_to(parent)
             return True
         except ValueError:
@@ -843,6 +921,9 @@ class LocalShellBackend(BaseSandbox):
         `skills/policies/runtimes/logs/.secrets` 都属于后端运行基础设施或规则资产，
         不允许在普通任务中被模型写入，避免 Agent 自己改掉工具、规则、运行时或敏感文件。
         """
+
+        # 检查目录是否在禁止写入的目录之下
+
         if self._is_under(path, self.policies_dir):
             return "write denied: policies are read-only"
         if self._is_under(path, self.skills_dir):
@@ -858,8 +939,11 @@ class LocalShellBackend(BaseSandbox):
     def _is_writable(self, path: Path) -> bool:
         """测写入权限：尝试写一个临时文件，成功就表示可写。"""
         try:
+            # 创建一个临时文件
             probe = path / ".write_test"
+            # 尝试写入临时文件
             probe.write_text("ok", encoding="utf-8")
+            # 删除临时文件
             probe.unlink(missing_ok=True)
             return True
         except OSError:
@@ -875,9 +959,15 @@ class LocalShellBackend(BaseSandbox):
 
         两层校验的分工是： 本函数做场景拒绝， 'normalize_safe_command()' 做命令白名单和语法收敛。
         """
+
+        # 命令小写化
         lowered = command.lower()
+
+        # 检测路径穿越
         if "../" in command or "..\\" in command:
             return "path traversal outside workspace is denied"
+
+        # 检测危险命令模式
         for pattern in _DANGEROUS_PATTERNS:
             if re.search(pattern, lowered):
                 return f"dangerous command pattern matched: {pattern}"
@@ -889,11 +979,17 @@ class LocalShellBackend(BaseSandbox):
                     for name in _VIRTUAL_ROOT_NAMES
             ):
                 continue
+            # 虚拟路径会在下一阶段映射到工作区，可以放行；其他绝对路径必须校验。
             candidate = Path(raw_path).expanduser().resolve()
+            # 安全检查：必须落在工作区范围内
             if not self._is_under_root(candidate):
                 return f"absolute path outside workspace: {candidate}"
+
+        # 检测 Windows 路径
         for match in _WINDOWS_PATH_RE.finditer(command):
+            # 检测 Windows 绝对路径
             candidate = Path(match.group(1)).expanduser().resolve()
+            # 安全检查：必须落在工作区范围内
             if not self._is_under_root(candidate):
                 return f"absolute path outside workspace: {candidate}"
         return None
@@ -907,13 +1003,17 @@ class LocalShellBackend(BaseSandbox):
         read_only 单独禁止，因此不能借此编辑项目文件。
         """
 
+        # 命令小写化
         words = command.strip().lower().split()
+        # 检测空命令
         if not words:
             return False
         if words[0] in {"ls", "cat", "pwd", "which", "dir", "type", "where"}:
             return True
         if len(words) < 2 or words[0] not in {"git", "git.exe"}:
             return False
+
+        # 检测 Git 子命令
         subcommand = words[1]
         if subcommand in {
             "clone",
@@ -927,8 +1027,10 @@ class LocalShellBackend(BaseSandbox):
             "status",
         }:
             return True
+        # 检测 Git 分支命令
         if subcommand == "branch":
             return not any(flag in words[2:] for flag in ("-d", "-m"))
+        # 检测 Git 远程命令
         if subcommand == "remote":
             return len(words) == 2 or words[2] in {"-v", "get-url"}
         return False
@@ -940,7 +1042,9 @@ class LocalShellBackend(BaseSandbox):
         执行前的命令预处理：替换虚拟路径并注入 Git AskPass 配置。
         """
 
+        # 替换虚拟路径
         prepared = _VIRTUAL_PATH_RE.sub(self._virtual_command_path_replacement, command)
+        # 注入 Git AskPass 配置
         return self._prepare_git_command(prepared)
 
     def _prepare_git_command(self, command: str) -> str:
@@ -952,18 +1056,26 @@ class LocalShellBackend(BaseSandbox):
         这样不会污染用户全局 Git 配置，也不会依赖桌面凭据管理器。
         """
 
+        # 去掉前缀 whitespace
         stripped = command.strip()
+        # 获取前缀 whitespace
         leading = command[:len(command) - len(stripped)]
 
-        if stripped == "git":
-            rest = ""
-        elif stripped.lower().startswith("git "):
-            rest = stripped[4:]
-        else:
+        # 分离可执行文件和参数
+        executable, separator, rest = stripped.partition(" ")
+        # 检测可执行文件是否为 git
+        if executable.lower() not in {"git", "git.exe"}:
             return command
+        # 检测参数是否为空
+        if not separator:
+            # 如果参数为空，则将 rest 设置为空字符串
+            rest = ""
 
-        askpass = self._askpass_path().as_posix()
-        return f'{leading}git -c credential.helper= -c core.askPass="{askpass}" {rest}'.rstrip()
+        # cmd.exe 可以接受带反斜杠的原生 Windows 路径；POSIX shell 使用普通路径。
+        askpass = str(self._askpass_path())
+
+        # 构造新的命令字符串
+        return f'{leading}{executable} -c credential.helper= -c core.askPass="{askpass}" {rest}'.rstrip()
 
     def _prepare_run_command(self, command: str, cwd: str) -> tuple[Path, str]:
         """准备 `run()` 的命令：解析 cwd、兼容 `cd`、安全检查、规范化。
@@ -972,19 +1084,27 @@ class LocalShellBackend(BaseSandbox):
         这里不会直接把整段 shell 原样执行，而是提取 `cd` 后的目录作为 subprocess 的 cwd，
         再对后半段命令做安全检查和白名单归一化。
         """
+
+        # 解析 cwd
         cwd_path = self._resolve_virtual_path(self._normalize_compat_path(cwd))
+        # 去掉前缀 whitespace
         command = re.sub(r"\s+2>&1(?=\s*(?:&&|\|\||$))", "", command.strip())
+        # 分离出第一个命令部分
         first_part = command.split("&&", 1)[0].strip()
+        # 检测是否为 cd 命令
         cd_match = re.fullmatch(r"cd\s+(.+)", first_part, flags=re.IGNORECASE)
         if cd_match:
             # 兼容 `cd xxx && command`，但不把 `cd` 作为真正的 shell 片段执行。
             # 这样可以减少 shell 拼接能力，同时保留旧工具的使用习惯。
             cwd_path = self._resolve_virtual_path(
+                # 兼容引号
                 self._normalize_compat_path(cd_match.group(1).strip().strip('"').strip("'")))
+            # 去掉 cd 命令部分
             command = command.split("&&", 1)[1].strip() if "&&" in command else ""
         if not command:
             raise ValueError("Command cannot be empty")
         if self.command_guard_enabled:
+            # 第一层安全校验：场景拒绝，快速拦截明显危险的命令。
             denied = self._deny_reason(command)
             if denied:
                 raise PermissionError(f"命令被拒绝：{denied}")
@@ -1026,6 +1146,7 @@ class LocalShellBackend(BaseSandbox):
         token 只存在于子进程环境变量中，不会拼接到命令文本或日志里。
         """
         env = os.environ.copy()
+        # 构造虚拟环境脚本目录
         scripts = self._venv_bin_dir()
 
         if scripts.exists():

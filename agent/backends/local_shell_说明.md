@@ -1,5 +1,7 @@
 # LocalShellBackend 源码分析
 
+> 对应源码：`agent/backends/local_shell.py`
+
 > 本文档详细解析 `agent/backends/local_shell.py` 中 `LocalShellBackend` 类的设计、流程、核心方法和安全机制。
 
 ---
@@ -14,6 +16,23 @@
 - **跨平台运行环境**：根据 `LOCAL_SHELL_PLATFORM` 使用 macOS 或 Windows 的 shell、路径和 Python 虚拟环境约定。
 - **Git 非交互认证**：通过 `GIT_ASKPASS` 脚本注入 GitHub Token，避免弹窗或依赖全局凭据。
 - **只读任务模式**：`read_only` 开启后只放行查看类命令和必要的只读 Git 子命令，所有文件写入接口直接拒绝，适用于代码审查等不应改动的场景。
+
+### 关键函数何时调用
+
+| 函数/方法 | 谁调用 | 调用时机 | 作用 |
+|---|---|---|---|
+| `LocalShellBackend.__init__()` | `server.ensure_backend_for_thread()`、runtime 轻量任务 | thread 第一次需要工作区时 | 校验平台并创建受控目录结构 |
+| `execute()` | DeepAgents 原生 `execute` 工具 | 模型请求执行命令时 | 校验、改写并执行受控命令 |
+| `read/write/edit/ls/glob/grep()` | DeepAgents 文件工具 | 模型读写或搜索文件时 | 转换虚拟路径并执行权限检查 |
+| `run()` | runtime 的 Git 同步逻辑 | 后端主动执行 Git 命令时 | 支持指定 cwd，返回 `CommandResult` |
+| `_prepare_command()` | `execute()`、`run()` | 命令通过安全校验后 | 替换虚拟路径并注入 Git AskPass |
+| `_execution_env()` | 子进程执行前 | 每次命令调用 | 注入 venv、PATH 和认证环境变量 |
+
+```text
+模型文件工具 -> read/write/edit/... -> _resolve_virtual_path()
+模型命令工具 -> execute() -> 安全校验 -> _prepare_command() -> subprocess
+runtime Git   -> run()     -> cwd 校验  -> _prepare_command() -> subprocess
+```
 
 ---
 

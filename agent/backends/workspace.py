@@ -7,7 +7,7 @@ class Workspace:
     """本地工作区封装。
 
     参数：
-        root: 工作区根目录，例如 `E:\\ai_workspace`。
+        root: 工作区根目录，例如 macOS 的 `~/ai_workspace` 或 Windows 的 `E:\\ai_workspace`。
 
     设计原则：
     - 初始化时确保 root 目录存在。
