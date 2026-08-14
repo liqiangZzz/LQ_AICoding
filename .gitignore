@@ -27,6 +27,3 @@ ui/node_modules/
 ui/.tanstack/tmp/
 ui/tsconfig.tsbuildinfo
 ui/.output/
-
-# 测试文件（本地保留，不推送远程）
-tests/

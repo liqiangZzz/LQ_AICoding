@@ -49,9 +49,9 @@ runtime Git   -> run()     -> cwd 校验  -> _prepare_command() -> subprocess
    传入的可以是 `Workspace` 对象、字符串或路径；最终统一展开为 `self.root`。所有后续路径都基于此根目录进行解析。
 
 3. **规划工作区子目录**
-   `skills/policies/reviews/runtimes/tmp/logs/secrets` 都固定挂在 `self.root` 下；
-   `projects` 目录额外支持通过 `LOCAL_SHELL_PROJECTS_DIR` 配置（默认 `projects`），并经 `_resolve_configured_subpath()` 安全解析——拒绝绝对路径和 `..`，确保配置值不会逃出工作区。
-   共享 Python venv 路径同理，由 `LOCAL_SHELL_SHARED_PYTHON_VENV` 配置（默认 `runtimes/python/default/.venv`）。
+   `projects/skills/policies/reviews/runtimes/tmp/logs/secrets` 都固定挂在 `self.root` 下。
+   `projects` 保持固定，使 DeepAgents 文件工具、Shell 默认 cwd 和仓库映射始终使用同一路径。
+   共享 Python venv 路径由 `LOCAL_SHELL_SHARED_PYTHON_VENV` 配置（默认 `runtimes/python/default/.venv`），并经 `_resolve_configured_subpath()` 安全解析——拒绝绝对路径和 `..`，确保配置值不会逃出工作区。
 
 4. **创建子目录结构（`_ensure_layout`）**
    在根目录下创建 `projects/`、`skills/`、`policies/`、`reviews/`、`runtimes/`、`tmp/`、`logs/`、`secrets/` 以及 venv 的父目录。这些目录分别对应虚拟路径 `/projects`、`/skills` 等。
@@ -62,13 +62,16 @@ runtime Git   -> run()     -> cwd 校验  -> _prepare_command() -> subprocess
 6. **生成策略文件**
    在 `policies/` 下创建默认的 `workspace.md`、`git.md`、`security.md`，作为长期规则文本，可被 Agent 读取。采用"文件不存在才创建"策略，不覆盖用户后续维护过的规则。
 
-7. **生成 Git AskPass 脚本**
+7. **同步内置 skills**
+   `_ensure_builtin_skills()` 把随当前应用版本发布的 skill 同步到 `/skills`。同名内置文件会更新，用户自己新建的其他 skill 目录不会被删除或覆盖。
+
+8. **生成 Git AskPass 脚本**
    在 `secrets/` 下创建当前平台的 `github_askpass.sh` 或 `github_askpass.cmd`。Git 会通过 `core.askPass` 调用脚本，从环境变量获取用户名和 Token。
 
-8. **写入工作区标记文件**
+9. **写入工作区标记文件**
    生成 `.ai_coding_workspace.json`，记录后端类型、平台、根目录、更新时间和虚拟目录列表，方便外部工具识别。
 
-9. **运行期开关与标识**
+10. **运行期开关与标识**
    - `read_only`：构造参数，开启后只允许只读命令和部分只读 Git 子命令，所有写入接口（`write/edit/upload/run`）直接拒绝。
    - `command_guard_enabled`：由 `LOCAL_SHELL_ENABLE_COMMAND_GUARD` 控制（默认开启，兼容旧变量名 `LOCAL_SHELL_COMMAND_GUARD_ENABLED`）。对 `execute()` 而言，关闭后会跳过 `_deny_reason()` 和 `normalize_safe_command()` 两层校验；兼容接口 `run()` 的行为不同，关闭后只跳过 `_deny_reason()`，仍会执行 `normalize_safe_command()`。
    - `output_encoding`：由 `LOCAL_SHELL_OUTPUT_ENCODING` 配置；macOS 默认 UTF-8，Windows 默认跟随系统代码页，用于子进程输出解码。

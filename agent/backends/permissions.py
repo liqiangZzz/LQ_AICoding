@@ -39,7 +39,7 @@ def assert_path_inside(path: Path, root: Path) -> Path:
         root: 工作区根目录
 
     Returns:
-        Path: 解析后的绝对呢路径
+        Path: 解析后的绝对路径
 
     Raises:
         WorkspacePermissionError: 如果 path 解析后位于 root 工作区外，则抛出此异常
@@ -63,7 +63,7 @@ def normalize_safe_command(command: str) -> str:
 
     模型经常会在命令末尾追加 `2>&1` 或 `| tail -5`。
     前者是为了合并 stderr，后者是 Unix 查看末尾输出的习惯。
-    课程版在 Python 中已经捕获 stdout/stderr，也会把完整输出返回给模型，
+    当前后端已在 Python 中捕获 stdout/stderr，也会把完整输出返回给模型，
     所以这里剥离这两个尾部片段，既兼容模型习惯，又不放开任意管道/重定向能力。
     """
 
@@ -72,7 +72,7 @@ def normalize_safe_command(command: str) -> str:
     normalized = re.sub(r"\s+2>&1\s*$", "", normalized)
     lowered = normalized.lower()
     first_word = normalized.split(maxsplit=1)[0].lower() if normalized else ""
-    # 课程版只放开和 Python/Git 项目验证相关的命令。
+    # 当前只放开和 Python/Git 项目验证相关的命令。
     # 如果未来要允许 npm、mvn、gradle 等命令，应在这里明确加白名单，
     # 同时补充对应的安全测试，而不是直接放开任意 shell。
     allowed_commands = {
@@ -90,7 +90,7 @@ def normalize_safe_command(command: str) -> str:
         raise WorkspacePermissionError(f"Command is not allowed: {command}")
 
     # shell 操作符会显著扩大命令能力，例如管道、重定向、命令拼接、命令替换。
-    # 课程版不允许模型组合复杂 shell 片段，避免绕过上面的命令白名单。
+    # 不允许模型组合复杂 shell 片段，避免绕过上面的命令白名单。
     shell_operators = [
         "&&",
         "||",

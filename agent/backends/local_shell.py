@@ -32,7 +32,7 @@ from deepagents.backends.sandbox import BaseSandbox
 
 from agent.backends.permissions import normalize_safe_command
 from agent.backends.workspace import Workspace
-from agent.core.settings import WORKSPACE_ROOT
+from agent.core.settings import PROJECT_ROOT, WORKSPACE_ROOT
 from agent.env_utils import get_env
 from agent.platform_utils import (
     host_platform,
@@ -194,14 +194,9 @@ class LocalShellBackend(BaseSandbox):
                 or (locale.getpreferredencoding(False) if self.platform == "windows" else "utf-8")
         )
 
-        # 工作区子目录规划
-
-        # 项目目录
-        self.projects_dir = _resolve_configured_subpath(
-            self.root,
-            os.environ.get("LOCAL_SHELL_PROJECTS_DIR", "projects"),
-            env_name="LOCAL_SHELL_PROJECTS_DIR",
-        )
+        # `/projects` 是 DeepAgents 对外约定的固定虚拟目录，不提供自定义子目录，
+        # 避免文件工具、Shell 默认 cwd 和仓库映射对同一仓库产生不同路径。
+        self.projects_dir = self.root / "projects"
         self.skills_dir = self.root / "skills"
         self.policies_dir = self.root / "policies"
         self.reviews_dir = self.root / "reviews"
@@ -690,6 +685,8 @@ class LocalShellBackend(BaseSandbox):
 
         # 创建默认策略文件
         self._ensure_policy_files()
+        # 将随应用发布的内置 skills 同步到工作区，供 DeepAgents 从 `/skills` 加载。
+        self._ensure_builtin_skills()
         # 创建 GitHub AskPass 认证脚本。
         self._ensure_github_askpass_files()
         # 写一个 .ai_coding_workspace.json 标记文件，方便外部工具识别工作区
@@ -726,13 +723,33 @@ class LocalShellBackend(BaseSandbox):
         defaults = {
             "workspace.md": "# 工作区目录说明\n\n- /projects：GitHub 项目源码目录。\n- /skills：DeepAgents 技能目录。\n- /runtimes：本机运行环境目录。\n- /reviews：审查结果目录。\n- /tmp：临时文件目录。\n- /logs：运行日志目录。\n",
             "git.md": "# Git 规范\n\n- 代码托管平台使用 GitHub。\n- 修改代码前先确认仓库目录和当前分支。\n- 提交前必须运行必要测试。\n",
-            "security.md": "# 安全规范\n\n- 不读取或输出 .secrets 目录内容。\n- 不提交密钥、Token、私钥或 .env 文件。\n",
+            "security.md": "# 安全规范\n\n- 不读取或输出 /secrets 目录内容。\n- 不提交密钥、Token、私钥或 .env 文件。\n",
         }
         for name, content in defaults.items():
             # 创建策略文件
             path = self.policies_dir / name
             if not path.exists():
                 path.write_text(content, encoding="utf-8")
+
+    def _ensure_builtin_skills(self) -> None:
+        """把随应用发布的 DeepAgents skills 同步到工作区。
+
+        内置 skill 由当前应用版本管理，启动时会更新同名文件；
+        用户自己新建的其他 skill 目录不会被删除或覆盖。
+        """
+
+        source_root = PROJECT_ROOT / "agent" / "skills"
+        if not source_root.is_dir():
+            logger.warning("内置 skills 目录不存在：%s", source_root)
+            return
+
+        for source in source_root.rglob("*"):
+            destination = self.skills_dir / source.relative_to(source_root)
+            if source.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
 
     def _ensure_shared_python_venv(self) -> None:
         """创建当前平台的共享 Python 虚拟环境。
@@ -847,17 +864,23 @@ class LocalShellBackend(BaseSandbox):
         if raw in {"", "."}:
             return "/"
 
-        # 展开用户主目录
+        # 先识别 DeepAgents 虚拟路径。在 macOS 上 `/projects` 也会被 Path
+        # 视为宿主机绝对路径，因此这个判断必须放在 is_absolute() 之前。
+        normalized = raw.replace("\\", "/")
+        virtual_prefixes = tuple(f"/{name}" for name in _VIRTUAL_ROOT_NAMES)
+        if normalized == "/" or any(
+            normalized == prefix or normalized.startswith(f"{prefix}/")
+            for prefix in virtual_prefixes
+        ):
+            return normalized
+
+        # 展开当前宿主机的真实绝对路径，并映射回虚拟路径。
         candidate = Path(raw).expanduser()
-        # 如果是绝对路径，转换成虚拟路径
         if candidate.is_absolute():
-            # 转换成虚拟路径
             return self._to_virtual_path(candidate)
-        # 如果路径以 / 开头，表示已经是虚拟路径
-        if raw.startswith("/"):
-            return raw
-        # 否则，加上 / 前缀
-        return "/" + raw
+
+        # 其他形式是旧工具传入的工作区相对路径。
+        return "/" + normalized.lstrip("/")
 
     def _resolve_virtual_path(self, path: str | os.PathLike[str]) -> Path:
         """把虚拟路径（如 `/projects/my-repo`）转成真实文件系统路径。
@@ -917,8 +940,8 @@ class LocalShellBackend(BaseSandbox):
     def _write_deny_reason(self, path: Path) -> str | None:
         """检查目录是否禁止写入。
 
-        课程项目只允许模型主要修改 `/projects` 下的业务仓库。
-        `skills/policies/runtimes/logs/.secrets` 都属于后端运行基础设施或规则资产，
+        项目只允许模型主要修改 `/projects` 下的业务仓库。
+        `skills/policies/runtimes/logs/secrets` 都属于后端运行基础设施或规则资产，
         不允许在普通任务中被模型写入，避免 Agent 自己改掉工具、规则、运行时或敏感文件。
         """
 

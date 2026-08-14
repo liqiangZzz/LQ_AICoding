@@ -17,9 +17,9 @@ logger = logging.getLogger("agent.api")
 
 
 class TaskCreateRequest(BaseModel):
-    repo_url: str = Field(min_length=1) # 仓库地址
-    prompt: str = Field(min_length=1) # 提示词
-    thread_id: str | None = None # 线程ID
+    repo_url: str = Field(min_length=1, description="GitHub 仓库地址")
+    prompt: str = Field(min_length=1, description="用户任务描述")
+    thread_id: str | None = Field(default=None, description="可选的会话线程 ID")
 
 
 @router.get("/health")
@@ -43,7 +43,10 @@ def health() -> dict[str, Any]:
         "has_deepseek_key": bool(get_env("DEEPSEEK_API_KEY")),
         "deepseek_base_url": get_env("DEEPSEEK_BASE_URL"),
         "main_model": get_env("MAIN_MODEL", "deepseek-v4-pro"),
-        "has_github_token": bool(get_env("GITHUB_TOKEN")),
+        "has_github_token": any(
+            get_env(name).strip()
+            for name in ("GITHUB_TOKEN", "GH_TOKEN", "SCM_GITHUB_TOKEN")
+        ),
     }
 
 

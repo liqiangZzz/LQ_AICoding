@@ -4,15 +4,15 @@ from pathlib import Path
 from agent.env_utils import get_env
 
 # ── 项目根目录 ────────────────────────────────────────────────
-# 项目根目录固定为当前课程项目的顶层目录 LQ_AICoding。
+# 项目根目录固定为当前 LQ_AICoding 源码仓库的顶层目录。
 # 后续所有本项目自己的数据文件、日志文件都默认放在这个目录下面，
 # 避免 LangGraph dev 或第三方工具把文件散落到隐藏目录中。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # ── SQLite 持久化 ─────────────────────────────────────────────
 # SQLite 数据目录：默认使用项目内 data/。
-# 用户仍然可以通过 .env 覆盖，但课程版推荐显式落在项目目录中，
-# 方便讲课时直接打开 SQLite 文件观察 checkpoint 和业务 Store 的区别。
+# 用户可以通过 .env 覆盖；默认落在项目目录中，便于备份和排查
+# checkpoint、业务 Store 与 LangGraph Store。
 DATA_DIR = Path(get_env("LQ_AICODING_DATA_DIR", str(PROJECT_ROOT / "data"))).expanduser().resolve()
 CHECKPOINT_DB_PATH = Path(
     get_env("CHECKPOINT_DB_PATH", str(DATA_DIR / "checkpoints.sqlite"))
@@ -24,7 +24,7 @@ LANGGRAPH_STORE_DB_PATH = Path(
 
 # ── 日志与轮转 ────────────────────────────────────────────────
 # 日志目录：所有后端日志和 Agent 运行日志都写入项目内 logs/。
-# 这样既能在控制台实时看，也能在课后通过日志文件复盘 Agent 做了什么。
+# 这样既能在控制台实时查看，也能通过日志文件复盘 Agent 行为。
 LOG_DIR = Path(get_env("LQ_AICODING_LOG_DIR", str(PROJECT_ROOT / "logs"))).expanduser().resolve()
 LOG_LEVEL = get_env("LQ_AICODING_LOG_LEVEL", "INFO").upper()
 LOG_ROTATION_WHEN = get_env("LQ_AICODING_LOG_WHEN", "midnight")
@@ -69,11 +69,11 @@ BACKEND_LOG_PATH = backend_log_path()
 AGENT_LOG_PATH = agent_log_path()
 
 # ── Agent 工作区 ──────────────────────────────────────────────
-# Agent 操作真实代码仓库时使用的工作区，不放在课程项目源码目录中，
-# 避免 Agent 误改课程项目本身。可通过 AI_WORKSPACE_ROOT 覆盖默认路径。
+# Agent 操作真实代码仓库时使用的工作区，不放在当前项目源码目录中，
+# 避免 Agent 误改自身。可通过 AI_WORKSPACE_ROOT 覆盖默认路径。
 WORKSPACE_ROOT = Path(
     get_env("AI_WORKSPACE_ROOT", str(Path.home() / "ai_workspace"))
-).expanduser()
+).expanduser().resolve()
 PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 
 # DeepAgents skills 目录统一放在所选平台的工作区 skills 子目录中。

@@ -213,8 +213,6 @@ uvicorn agent.app:app --host 127.0.0.1 --port 8000 --reload
 |---|---:|---|---|
 | `GITHUB_TOKEN` | 按需 | 空 | GitHub REST API 与 HTTPS Git 认证令牌 |
 | `GITHUB_API_BASE_URL` | 否 | `https://api.github.com` | GitHub REST API 地址 |
-| `GITHUB_WEB_BASE_URL` | 否 | `https://github.com` | GitHub Web 地址 |
-| `DEFAULT_REPO_PROVIDER` | 否 | `github` | 默认代码托管平台 |
 
 代码还兼容由 CI 或外部运行环境注入的 `GH_TOKEN`、`SCM_GITHUB_TOKEN`。读取优先级为：
 
@@ -224,11 +222,12 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 
 ### 模型与搜索
 
-| 变量 | 说明               |
-|---|------------------|
-| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型配置    |
-| `GLM_API_KEY` / `GLM_BASE_URL` | 智谱 GLM 模型配置      |
-| `KIMI_API_KEY` / `KIMI_BASE_URL` | KImi 模型配置        |
+| 变量 | 说明 |
+|---|---|
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型配置 |
+| `MAIN_MODEL` | Agent 主模型，默认 `deepseek-v4-pro` |
+| `INTENT_MODEL` | 意图分类模型，留空时跟随 `MAIN_MODEL` |
+| `INTENT_MODEL_TEMPERATURE` / `INTENT_MODEL_MAX_TOKENS` | 意图分类输出参数 |
 | `ZHIPU_API_KEY` | 智谱 Web Search 配置 |
 
 ### 工作区
@@ -240,6 +239,7 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 | `LOCAL_SHELL_WORKSPACE` | 本地 Shell 工作区；默认继承 `AI_WORKSPACE_ROOT` |
 | `*_MACOS` / `*_WINDOWS` | 对应路径变量的平台专用值；当前平台的值会覆盖通用值，留空则沿用通用值，两者都为空时使用代码默认值 |
 | `LOCAL_SHELL_SHARED_PYTHON_VENV` | 工作区内共享 venv 相对路径 |
+| `LOCAL_SHELL_CREATE_PYTHON_VENV` | 是否在首次启动时创建共享 Python venv，默认关闭 |
 | `LOCAL_SHELL_ENABLE_COMMAND_GUARD` | 是否启用命令安全守卫 |
 
 ### 沙箱
@@ -249,7 +249,6 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 | 变量 | 说明 |
 |---|---|
 | `SANDBOX_TYPE` | 当前固定为 `local_shell`；其他值会在后端初始化时被拒绝 |
-| `LOCAL_SHELL_PROJECTS_DIR` | 工作区内的项目子目录，默认 `projects` |
 | `LOCAL_SHELL_OUTPUT_ENCODING` | 子进程输出编码；留空时根据当前系统自动选择 |
 
 远程 Sandbox 相关变量尚未接入，因此 `.env` 和 `.env.example` 中不需要配置 `SANDBOX_DOMAIN`、`OPENSANDBOX_API_KEY` 等参数。
@@ -261,9 +260,18 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 | `LQ_AICODING_DATA_DIR` | 数据目录 |
 | `CHECKPOINT_DB_PATH` | LangGraph checkpoint SQLite 路径 |
 | `STORE_DB_PATH` | 业务 Store SQLite 路径 |
+| `LANGGRAPH_STORE_DB_PATH` | LangGraph Store SQLite 路径 |
 | `LQ_AICODING_LOG_DIR` | 日志目录 |
 | `LQ_AICODING_LOG_LEVEL` | 日志级别 |
+| `LQ_AICODING_LOG_WHEN` / `LQ_AICODING_LOG_INTERVAL` | 日志轮转时机与间隔 |
 | `LQ_AICODING_LOG_RETENTION_DAYS` | 日志保留天数 |
+| `LQ_AICODING_DEBUG_STREAM_EVENTS` | 设为 `1` 时记录原始流式事件，仅用于排障 |
+
+### Agent 运行限制
+
+`AGENT_MAX_TOOL_CALLS` 和 `AGENT_MAX_SECONDS` 是全局上限。如果需要按任务调整，可使用
+`AGENT_<TASK_KIND>_MAX_TOOL_CALLS` 和 `AGENT_<TASK_KIND>_MAX_SECONDS`，其中 `TASK_KIND`
+支持 `CODING`、`ANALYSIS`、`PLANNING`、`REVIEW`、`QA`、`INSPECT`、`SYNC`。
 
 ## GitHub Token 权限建议
 
@@ -281,7 +289,7 @@ GITHUB_TOKEN > GH_TOKEN > SCM_GITHUB_TOKEN
 - Token 一旦出现在截图、日志、聊天或提交历史中，应立即撤销并重新生成；
 - 不要把 Token 写进 Git remote URL；
 - 不要在命令参数、异常文本或日志中输出敏感值；
-- 本地 Shell 后端属于课程和本地开发级安全边界，不等同于生产级容器隔离；
+- 本地 Shell 后端属于本地开发级安全边界，不等同于生产级容器隔离；
 - 生产环境还应增加独立系统用户、容器、网络策略、审计和密钥管理服务。
 
 ## 开发检查

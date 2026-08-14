@@ -4,6 +4,8 @@
 *.toml text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
 *.sh text eol=lf
 
 # Windows 命令脚本使用系统原生 CRLF；当前运行时生成的 askpass.cmd 也遵循此约定。

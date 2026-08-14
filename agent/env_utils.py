@@ -16,6 +16,7 @@ _PLATFORM_PATH_ENV_NAMES = (
     "LQ_AICODING_DATA_DIR",
     "CHECKPOINT_DB_PATH",
     "STORE_DB_PATH",
+    "LANGGRAPH_STORE_DB_PATH",
     "LQ_AICODING_LOG_DIR",
     "LOCAL_SHELL_WORKSPACE",
 )
@@ -25,12 +26,11 @@ def _load_non_empty_env(path: Path, *, override: bool) -> None:
     r"""加载 .env 中的非空变量。
 
     python-dotenv 默认会把 `DEEPSEEK_API_KEY=` 这种空值也写入环境变量。
-    课程项目的 `.env` 通常会保留空字段作为模板，如果直接加载空值，
+    项目的 `.env` 通常会保留空字段作为模板，如果直接加载空值，
 
     所以这里采用自定义加载规则：
     - 空值不写入环境变量。
-    - open-swe 的 .env 先作为默认值加载。
-    - 本项目 .env 只有填写了非空值时才覆盖默认值。
+    - `.env` 只有填写了非空值时才覆盖当前环境。
     """
 
     if not path.exists():
@@ -47,7 +47,11 @@ def _active_platform_profile() -> str:
 
     configured = os.environ.get("LOCAL_SHELL_PLATFORM", "auto").strip().lower() or "auto"
     if configured == "auto":
-        return "WINDOWS" if os.name == "nt" or sys.platform == "win32" else "MACOS"
+        if os.name == "nt" or sys.platform == "win32":
+            return "WINDOWS"
+        if sys.platform == "darwin":
+            return "MACOS"
+        raise RuntimeError(f"Unsupported local shell host platform: {sys.platform}")
     aliases = {
         "mac": "MACOS",
         "macos": "MACOS",
@@ -56,7 +60,12 @@ def _active_platform_profile() -> str:
         "win32": "WINDOWS",
         "windows": "WINDOWS",
     }
-    return aliases.get(configured, configured.upper())
+    try:
+        return aliases[configured]
+    except KeyError as exc:
+        raise ValueError(
+            "LOCAL_SHELL_PLATFORM must be one of: auto, macos, windows"
+        ) from exc
 
 
 def _apply_platform_path_profile(path: Path) -> None:
@@ -78,7 +87,7 @@ def _apply_platform_path_profile(path: Path) -> None:
 
 
 def load_environment() -> None:
-    r"""加载课程项目运行需要的环境变量。
+    """加载项目运行需要的环境变量。
 
     加载顺序：
     1. 加载 `.env` 中的非空配置；
@@ -87,8 +96,7 @@ def load_environment() -> None:
     """
     _load_non_empty_env(LOCAL_ENV, override=True)
     _apply_platform_path_profile(LOCAL_ENV)
-    # 课程版默认关闭 LangSmith/LangChain tracing。
-    # 这样学生启动项目时不需要额外配置 LangSmith，也不会把运行数据发到外部观测平台。
+    # 默认关闭 LangSmith/LangChain tracing，避免未显式授权时上传运行数据。
     os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
     os.environ.setdefault("LANGSMITH_TRACING", "false")
     os.environ.setdefault("LANGCHAIN_API_KEY", "")
