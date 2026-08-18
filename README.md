@@ -70,6 +70,7 @@ git@github.com:liqiangZzz/LQ_AICoding.git
 ### 5. 审查记录与运行事件
 
 - 结构化保存代码审查发现；
+- 支持只读 Reviewer 子 Agent、GitHub PR 上下文、确定性 diff 行号校验；
 - 将发现项与 LangGraph `thread_id` 关联；
 - 记录工具调用的开始、完成和失败状态；
 - 区分 coding、analysis、planning、qa、sync、inspect 等任务类型；
@@ -117,13 +118,15 @@ LQ_AICoding/
 │   │   ├── logging_config.py          # 日志初始化与轮转
 │   │   ├── task_intent.py             # 任务类型与只读权限判断
 │   │   └── events.py                  # Agent 运行事件记录
+│   ├── reviewer_rules/                # 内置代码审查兜底规则
 │   └── tools/
 │       ├── github_api.py              # GitHub REST API 底层封装
 │       ├── github_tools.py            # GitHub Agent 工具
 │       ├── fetch_url_tools.py         # 网页读取工具
 │       ├── web_search.py              # 联网搜索工具
 │       ├── safe_http.py               # SSRF 防护与安全重定向
-│       ├── reviewer_tools.py          # 代码审查记录工具
+│       ├── reviewer_tools.py          # 代码审查规则、diff 与 finding 工具
+│       ├── reviewer_diff.py           # diff 解析与 finding 位置校验
 │       └── runtime_context.py         # LangGraph 运行上下文
 ├── .env.example                       # 环境变量示例
 ├── .gitignore                         # 本机文件与敏感配置忽略规则

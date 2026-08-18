@@ -22,6 +22,7 @@
 | `agent/store/sqlite_store.py` | `agent/store/sqlite_store_说明.md` |
 | `agent/core/middleware/*.py` | `agent/core/middleware/中间件总览.md` |
 | `agent/tools/*.py` | `agent/tools/工具包总览.md` |
+| `agent/tools/reviewer_diff.py` | `agent/tools/reviewer_diff_说明.md` |
 
 ## 推荐阅读顺序
 
@@ -31,6 +32,7 @@
 4. `agent/server.py`：真正组装 DeepAgent，包括模型、工具、中间件、后端和持久化组件。
 5. `agent/core/middleware/中间件总览.md`：读完 `server.py` 后阅读，理解 Agent 构建时注册的上下文注入、参数清洗、异常处理和记忆写回分别在什么时候触发。
 6. `agent/tools/工具包总览.md`：理解中间件之后阅读，了解模型能调用哪些 GitHub、搜索、网页读取和审查工具，以及工具如何访问运行上下文和业务 Store。
+   - 正在定位 Reviewer 的文件和行号校验时，再读 `agent/tools/reviewer_diff_说明.md`。
 7. `agent/backends/local_shell.py`：文件与命令执行边界，也是 macOS/Windows 兼容的核心。
 8. `agent/core/streaming_runtime.py`：消费模型事件流并转换成前端可展示的运行事件。
 9. `agent/store/sqlite_store.py`：任务、运行、事件、仓库映射和审查结果的业务数据库。

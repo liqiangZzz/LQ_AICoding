@@ -123,10 +123,13 @@ LangGraph Store 为 DeepAgents 提供仓库级长期记忆：
 - `qa`
 - `sync`
 - `inspect`
+- `review`
 
-当前没有独立的 `review` task_kind。代码审查可通过只读分析类任务使用 reviewer tools 记录 findings。
+`review` 是独立的只读任务类型，可以调用 Reviewer 子 Agent、diff 校验和 finding 工具，
+但不能修改源码、提交、推送或创建 Pull Request。
 
-任务分类由 `task_intent.py` 中的本地关键词规则完成，不调用模型。这使权限边界可预测，但也意味着路由精度取决于关键词是否覆盖用户表达。
+任务分类先由 `task_intent.py` 的确定性规则识别明显意图；需要进一步判断时再进入
+模型分类流程。无论分类来源是什么，最终权限仍由 `server.py` 和 Backend 强制执行。
 
 ---
 

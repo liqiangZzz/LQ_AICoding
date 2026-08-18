@@ -15,6 +15,9 @@
 | `_task_kind_from_config()` | `get_agent()` | Backend 创建后、工具注册前 | 决定只读状态、提示词和 GitHub 写工具范围 |
 | `_prepare_repo_backend_context()` | `get_agent()` | 本轮配置包含 `repo_url` 时 | 返回组合 Backend、记忆路径和预读内容 |
 | `create_repo_backend()` | `_prepare_repo_backend_context()` | 仓库记忆初始化后 | 把 `/memories/` 路由到 LangGraph Store |
+| `_general_purpose_subagent()` | `get_agent()` | 创建主 Agent 前 | 构建只读分析子 Agent |
+| `_code_reviewer_subagent()` | `get_agent()` | 创建主 Agent 前 | 构建只读 Reviewer 子 Agent及审查工具链 |
+| `_agent_filesystem_permissions()` | `get_agent()` | 调用 `create_deep_agent()` 时 | 声明主 Agent 虚拟目录读写边界 |
 
 ```text
 runtime._build_agent_for_runtime()
@@ -58,20 +61,34 @@ runtime._build_agent_for_runtime()
 
 ## 工具权限
 
-所有任务都可使用资料读取和审查记录工具。只有 `coding` 注册：
+所有任务都可使用资料读取、GitHub PR 上下文和审查工具。Reviewer 的典型顺序是：
+
+```text
+读取规则 -> 读取 GitHub PR 上下文（可选） -> 获取本地 diff
+        -> 校验 finding 文件/行号 -> 保存 finding -> 汇总 finding
+```
+
+只有 `coding` 注册以下远端写工具：
 
 - `open_github_pull_request`
 - `publish_github_pr_comment`
 
 远端写操作不注册给只读 Agent，比仅在提示词中要求“不要调用”更可靠。
 
+文件权限同样按任务类型生成：只有 `coding` 可以写 `/projects`；其他任务只能写
+`/reviews` 和 `/tmp`。`/memories` 对模型始终只读，由 runtime 在成功后统一更新。
+
 ## 中间件顺序
 
 1. `MessageSanitizeMiddleware`：清理不兼容的历史消息块。
 2. `ContextInjectionMiddleware`：注入仓库标识和长期记忆。
 3. `SanitizeToolInputsMiddleware`：在工具执行前清洗路径、URL 和整数参数。
-4. `ToolErrorMiddleware`：把工具异常转换成模型可处理的 `ToolMessage`。
-5. `MemoryUpdateMiddleware`：任务结束后兜底写回稳定结论。
+4. `SummarizationToolMiddleware`：注册显式压缩上下文工具，长任务需要时由 Agent 调用。
+5. `ModelCallLimitMiddleware`：限制单次运行的模型调用数，超限后结束本轮。
+6. `ToolErrorMiddleware`：把工具执行栈中的异常转换成模型可处理的 `ToolMessage`。
+
+`MemoryUpdateMiddleware` 文件仍保留，但当前没有在 `server.py` 注册。仓库记忆由
+`core/runtime.py` 在任务成功后统一更新，避免中间件和 runtime 双写。
 
 ## Backend 组合
 

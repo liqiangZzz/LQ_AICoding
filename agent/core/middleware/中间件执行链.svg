@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="840" viewBox="0 0 1600 840" role="img" aria-labelledby="title desc">
+  <title id="title">Agent 中间件执行链与运行限制观察链</title>
+  <desc id="desc">上半部分展示模型和工具执行链，下半部分展示不会执行工具的事件流运行限制观察链。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 30px sans-serif; fill: #172033; }
+      .section { font: 700 24px sans-serif; fill: #172033; }
+      .label { font: 17px sans-serif; fill: #172033; text-anchor: middle; }
+      .small { font: 15px sans-serif; fill: #475569; text-anchor: middle; }
+      .note { font: 16px sans-serif; fill: #334155; }
+      .tool { fill: #f5f3ff; stroke: #8b5cf6; stroke-width: 2; rx: 10; }
+      .limit { fill: #eff6ff; stroke: #3b82f6; stroke-width: 2; rx: 10; }
+      .runtime { fill: #ecfdf5; stroke: #10b981; stroke-width: 2; rx: 10; }
+      .error { fill: #fff1f2; stroke: #f43f5e; stroke-width: 2; rx: 10; }
+      .line { stroke: #475569; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #3b82f6; stroke-width: 2; stroke-dasharray: 8 7; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="840" fill="#ffffff"/>
+  <text x="60" y="52" class="title">Agent 生命周期：两条互不混淆的链路</text>
+
+  <rect x="45" y="85" width="1510" height="380" fill="#fafafa" stroke="#cbd5e1" stroke-width="2" rx="14"/>
+  <text x="75" y="125" class="section">① 模型与工具执行链</text>
+
+  <rect x="75" y="165" width="140" height="74" class="tool"/><text x="145" y="196" class="label"><tspan x="145">任务开始</tspan><tspan x="145" dy="24">消息清洗</tspan></text>
+  <rect x="260" y="165" width="190" height="74" class="tool"/><text x="355" y="194" class="label"><tspan x="355">ContextInjection</tspan><tspan x="355" dy="24">注入仓库上下文</tspan></text>
+  <rect x="500" y="165" width="170" height="74" class="tool"/><text x="585" y="194" class="label"><tspan x="585">模型推理</tspan><tspan x="585" dy="24">模型调用计数</tspan></text>
+  <rect x="720" y="165" width="160" height="74" class="tool"/><text x="800" y="194" class="label"><tspan x="800">生成</tspan><tspan x="800" dy="24">tool call</tspan></text>
+  <rect x="930" y="165" width="190" height="74" class="tool"/><text x="1025" y="194" class="label"><tspan x="1025">SanitizeToolInputs</tspan><tspan x="1025" dy="24">执行前清洗参数</tspan></text>
+  <rect x="1170" y="165" width="170" height="74" class="tool"/><text x="1255" y="194" class="label"><tspan x="1255">ToolError</tspan><tspan x="1255" dy="24">包裹 handler</tspan></text>
+  <rect x="1390" y="165" width="130" height="74" class="tool"/><text x="1455" y="194" class="label"><tspan x="1455">handler</tspan><tspan x="1455" dy="24">执行工具</tspan></text>
+
+  <path d="M215 202 H260" class="line"/><path d="M450 202 H500" class="line"/><path d="M670 202 H720" class="line"/><path d="M880 202 H930" class="line"/><path d="M1120 202 H1170" class="line"/><path d="M1340 202 H1390" class="line"/>
+  <path d="M1455 239 V285 H585 V239" class="line"/>
+  <text x="1030" y="309" class="small">工具结果返回模型，继续下一轮推理</text>
+
+  <rect x="500" y="350" width="240" height="70" class="runtime"/><text x="620" y="379" class="label"><tspan x="620">Summarization Tool</tspan><tspan x="620" dy="23">按需压缩长上下文</tspan></text>
+  <path d="M585 239 V350" class="line"/>
+  <rect x="850" y="350" width="240" height="70" class="error"/><text x="970" y="379" class="label"><tspan x="970">达到模型调用上限</tspan><tspan x="970" dy="23">结束本轮 Agent</tspan></text>
+  <path d="M670 202 C760 202 760 385 850 385" class="line"/>
+  <text x="76" y="445" class="note">只有 handler(request) 工具执行栈中的异常会由 ToolErrorMiddleware 转成 ToolMessage，模型可据此修正后继续。</text>
+
+  <rect x="45" y="495" width="1510" height="300" fill="#f8fbff" stroke="#bfdbfe" stroke-width="2" rx="14"/>
+  <text x="75" y="535" class="section">② 运行限制观察链（不执行工具，也不经过 ToolErrorMiddleware）</text>
+
+  <rect x="75" y="590" width="210" height="76" class="limit"/><text x="180" y="620" class="label"><tspan x="180">DeepAgents</tspan><tspan x="180" dy="24">raw event stream</tspan></text>
+  <rect x="345" y="590" width="250" height="76" class="limit"/><text x="470" y="620" class="label"><tspan x="470">streaming_runtime</tspan><tspan x="470" dy="24">逐个消费事件</tspan></text>
+  <rect x="655" y="590" width="250" height="76" class="limit"/><text x="780" y="620" class="label"><tspan x="780">AgentRunLimitTracker</tspan><tspan x="780" dy="24">observe_event()</tspan></text>
+  <rect x="965" y="590" width="220" height="76" class="limit"/><text x="1075" y="620" class="label"><tspan x="1075">统计运行时间</tspan><tspan x="1075" dy="24">与工具调用次数</tspan></text>
+  <rect x="1245" y="590" width="275" height="76" class="error"/><text x="1382" y="620" class="label"><tspan x="1382">超限：抛出异常</tspan><tspan x="1382" dy="24">停止消费，任务 failed</tspan></text>
+  <path d="M285 628 H345" class="dash"/><path d="M595 628 H655" class="dash"/><path d="M905 628 H965" class="dash"/><path d="M1185 628 H1245" class="dash"/>
+  <text x="75" y="730" class="note">AgentRunLimitExceeded 由事件消费层抛出，不在工具 handler 的调用栈内，因此不会被 ToolErrorMiddleware 捕获。</text>
+  <text x="75" y="765" class="note">正常成功结束后，core/runtime.py 再统一更新仓库长期记忆；当前 server.py 不注册 MemoryUpdateMiddleware。</text>
+</svg>
