@@ -5,7 +5,15 @@ from langchain_core.tools import tool
 
 from agent.core.events import record_event
 from agent.core.graph import get_store
-from agent.tools.github_api import create_pull_request, post_pr_comment
+from agent.tools.github_api import (
+    create_pull_request,
+    get_pull_request,
+    list_pull_request_comments,
+    list_pull_request_commits,
+    list_pull_request_files,
+    list_pull_request_review_comments,
+    post_pr_comment,
+)
 from agent.tools.runtime_context import get_runtime_thread_id, runtime_is_read_only_task
 
 logger = logging.getLogger("agent.run.github")
@@ -99,8 +107,46 @@ def publish_github_pr_comment(owner: str, repo: str, number: int, body: str) -> 
     Returns:
           GitHub API 返回的评论 JSON。
     """
+    if runtime_is_read_only_task():
+        return {
+            "ok": False,
+            "error": "当前任务是只读任务，不能发布 Pull Request 评论。",
+        }
+
     # 评论内容可能较长，不写入日志，日志只保留仓库和 PR 编号用于问题定位
     logger.info("准备发布 GitHub PR 评论：owner=%s repo=%s number=%s", owner, repo, number)
 
     # 发布评论
     return post_pr_comment(owner=owner, repo=repo, number=number, body=body)
+
+
+
+@tool
+def get_github_pull_request_context(owner: str, repo: str, number: int) -> dict[str, Any]:
+    """ 读取 GitHub Pull Request 审查上下文。
+
+    Reviewer 子 Agent 使用该工具获取 PR 标题、描述、变更文件、提交列表和已有评论。
+    该工具只读，不会修改 GitHub 仓库。
+    """
+
+    logger.info("读取 GitHub PR 上下文：owner=%s repo=%s number=%s", owner, repo, number)
+    pr = get_pull_request(owner=owner, repo=repo, number=number)
+    commits = list_pull_request_commits(owner=owner, repo=repo, number=number)
+    files = list_pull_request_files(owner=owner, repo=repo, number=number)
+    comments = list_pull_request_comments(owner=owner, repo=repo, number=number)
+    review_comments = list_pull_request_review_comments(owner=owner, repo=repo, number=number)
+    return {
+        "pull_request": pr,
+        "commits": commits,
+        "files": files,
+        "comments": comments,
+        "review_comments": review_comments,
+        "summary": {
+            "title": pr.get("title") if isinstance(pr, dict) else None,
+            "state": pr.get("state") if isinstance(pr, dict) else None,
+            "files_count": len(files),
+            "commits_count": len(commits),
+            "comments_count": len(comments),
+            "review_comments_count": len(review_comments),
+        }
+    }

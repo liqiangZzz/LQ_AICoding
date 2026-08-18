@@ -201,6 +201,67 @@ def create_pull_request(
     return response.json()
 
 
+def _github_get(path: str, *, params: dict[str, Any] | None = None) -> dict | list:
+    """执行 GitHub GET 请求。
+
+    令牌只放入 Authorization 请求头，避免出现在 URL、代理日志或异常信息中。
+    """
+    api_base = get_env("GITHUB_API_BASE_URL", "https://api.github.com").rstrip("/")
+    url = f"{api_base}{path}"
+    with httpx.Client(timeout=30) as client:
+        response = client.get(
+            url,
+            headers=_headers(get_github_token()),
+            params=dict(params or {}),
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"GitHub API 读取失败: {response.status_code} {mask_token(response.text)}"
+        )
+    return response.json()
+
+
+def _github_get_all(path: str, *, params: dict[str, Any] | None = None) -> list[Any]:
+    """读取 GitHub 分页列表，直到最后一页。"""
+
+    page = 1
+    items: list[Any] = []
+    while True:
+        page_params = {**(params or {}), "per_page": 100, "page": page}
+        data = _github_get(path, params=page_params)
+        if not isinstance(data, list):
+            raise TypeError(f"GitHub API 返回格式异常，期望列表: {path}")
+        items.extend(data)
+        if len(data) < 100:
+            return items
+        page += 1
+
+def get_pull_request(*, owner: str, repo: str, number: int) -> dict:
+    """读取 GitHub Pull Request 详情。"""
+
+    data = _github_get(f"/repos/{owner}/{repo}/pulls/{number}")
+    return data if isinstance(data, dict) else {"items": data}
+
+def list_pull_request_commits(*, owner: str, repo: str, number: int) -> list[Any]:
+    """读取 GitHub Pull Request 提交列表。"""
+    return _github_get_all(f"/repos/{owner}/{repo}/pulls/{number}/commits")
+
+def list_pull_request_files(*, owner: str, repo: str, number: int) -> list[Any]:
+    """读取 GitHub Pull Request 的文件变更列表。"""
+    return _github_get_all(f"/repos/{owner}/{repo}/pulls/{number}/files")
+
+def list_pull_request_comments(*, owner: str, repo: str, number: int) -> list[Any]:
+    """读取 GitHub Pull Request 的普通评论列表。"""
+
+    # PR 的普通会话评论属于 Issues comments API；pulls/.../comments 是行级审查评论。
+    return _github_get_all(f"/repos/{owner}/{repo}/issues/{number}/comments")
+
+
+def list_pull_request_review_comments(*, owner: str, repo: str, number: int) -> list[Any]:
+    """读取 GitHub Pull Request 的行级审查评论列表。"""
+
+    return _github_get_all(f"/repos/{owner}/{repo}/pulls/{number}/comments")
+
 def post_pr_comment(*, owner: str, repo: str, number: int, body: str) -> dict:
     """
     调用 GitHub API 向 Pull Request 发布普通评论。
