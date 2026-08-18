@@ -6,8 +6,12 @@
 import logging
 from typing import Any
 
-from deepagents import create_deep_agent
+from deepagents import FilesystemPermission, SubAgent, create_deep_agent
 from deepagents.backends import CompositeBackend, StoreBackend
+from deepagents.middleware import create_summarization_tool_middleware
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langgraph.store.base import BaseStore
 
@@ -15,7 +19,6 @@ from agent.backends.local_shell import LocalShellBackend
 from agent.backends.workspace import Workspace
 from agent.core.graph import get_checkpointer, get_langgraph_store, get_store
 from agent.core.middleware.context_injection import ContextInjectionMiddleware
-from agent.core.middleware.memory_update import MemoryUpdateMiddleware
 from agent.core.middleware.message_sanitize import MessageSanitizeMiddleware
 from agent.core.middleware.tool_error import ToolErrorMiddleware
 from agent.core.middleware.tool_sanitize import SanitizeToolInputsMiddleware
@@ -39,6 +42,12 @@ from agent.tools import (
     web_search,
 )
 from agent.tools.github_api import parse_github_repo_url
+from agent.tools.github_tools import get_github_pull_request_context
+from agent.tools.reviewer_tools import (
+    get_review_diff_summary,
+    load_default_review_rules,
+    validate_review_finding_location,
+)
 
 logger = logging.getLogger(__name__)
 DEFAULT_RECURSION_LIMIT = 2000
@@ -65,6 +74,181 @@ def ensure_backend_for_thread(thread_id: str) -> LocalShellBackend:
         logger.info("复用 thread 的 LocalShellBackend：%s", thread_id)
     return backend
 
+def _general_purpose_subagent(model: BaseChatModel) -> SubAgent:
+    """构建 之前项目 风格的通用分析子 Agent。
+
+    子 Agent 只负责阅读、分析、总结和给主 Agent 提供建议。它不能直接修改
+    `/projects` 下的源码，也不能改 `/skills`、`/policies`、`/runtimes`。
+    这样可以让主 Agent 保持最终执行权，降低子 Agent 误改代码的风险。
+    """
+
+    return {
+        "name": GENERAL_PURPOSE_SUBAGENT["name"],
+        "description": GENERAL_PURPOSE_SUBAGENT["description"],
+        "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+        "model": model,
+        "skills": ["/skills/"],
+        "permissions": [
+            FilesystemPermission(
+                operations=["read"],
+                paths=[
+                    "/projects/**",
+                    "/skills/**",
+                    "/policies/**",
+                    "/reviews/**",
+                    "/runtimes/**",
+                    "/logs/**",
+                    "/tmp/**",
+                    "/memories/**",
+                ],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/reviews/**", "/tmp/**"],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["write"],
+                paths=[
+                    "/projects/**",
+                    "/skills/**",
+                    "/policies/**",
+                    "/runtimes/**",
+                    "/logs/**",
+                ],
+                mode="deny",
+            ),
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=["/**"],
+                mode="deny",
+            ),
+        ],
+    }
+
+
+def _code_reviewer_subagent(model: BaseChatModel) -> SubAgent:
+    """构建只读代码审查子 Agent。
+
+    Reviewer 子 Agent 的职责是读取规则、读取 GitHub PR 上下文、分析 diff、
+    记录结构化 finding，并输出中文审查报告。第一版不允许它修改 `/projects`
+    中的源码，也不允许提交、push 或创建 PR，避免“审查”和“修复”职责混在一起。
+    """
+
+    return {
+        "name": "code_reviewer",
+        "description": (
+            "用于审查 GitHub Pull Request 或本地分支 diff 的子 Agent。"
+            "它会读取审查规则、PR 上下文和变更文件，记录结构化 finding，"
+            "最后输出中文审查报告。"
+        ),
+        "system_prompt": (
+            "你是 LQ-AICODING 的代码审查子 Agent，只负责 review，不负责修改代码。\n"
+            "你必须使用中文输出，代码标识符、路径、命令和 API 名称可以保留英文。\n"
+            "审查流程：\n"
+            "1. 按 code-review skill 先用 read_file 读取工作区规则和仓库规则；读不到时调用 load_default_review_rules。\n"
+            "2. 如果用户提供 GitHub PR 编号，调用 get_github_pull_request_context 读取 PR 详情、提交、文件和评论。\n"
+            "3. 调用 get_review_diff_summary 获取本地 diff 摘要和变更行号。\n"
+            "4. 只记录会导致真实风险的问题，不记录纯风格偏好。\n"
+            "5. finding 必须包含 file、line、severity、title、description。\n"
+            "6. 记录 finding 前，尽量确认文件属于本次 diff；无法确认行号时使用文件级 finding。\n"
+            "7. 使用 add_review_finding 保存结构化发现，再用 list_review_findings 汇总。\n"
+            "8. 最终报告必须包含结论、阻塞问题、高风险问题、一般建议和测试建议。\n"
+            "9. 不要修改文件、不要提交、不要 push、不要创建 Pull Request。\n"
+        ),
+        "model": model,
+        "tools": [
+            get_github_pull_request_context,
+            load_default_review_rules,
+            get_review_diff_summary,
+            validate_review_finding_location,
+            add_review_finding,
+            list_review_findings,
+        ],
+        "skills": ["/skills/"],
+        "permissions": [
+            FilesystemPermission(
+                operations=["read"],
+                paths=[
+                    "/projects/**",
+                    "/skills/**",
+                    "/policies/**",
+                    "/reviews/**",
+                    "/memories/**",
+                    "/tmp/**",
+                ],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/reviews/**", "/tmp/**"],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["write"],
+                paths=["/projects/**", "/skills/**", "/policies/**", "/memories/**"],
+                mode="deny",
+            ),
+            FilesystemPermission(
+                operations=["read", "write"],
+                paths=["/**"],
+                mode="deny",
+            ),
+        ],
+    }
+
+
+def _agent_filesystem_permissions(task_kind: TaskKind) -> list[FilesystemPermission]:
+    """主 Agent 的文件系统权限。
+
+    只有 coding 主 Agent 可以修改 `/projects`；所有任务都只能把临时产物写入
+    `/reviews` 和 `/tmp`。`/memories` 始终只读，由 runtime 在任务成功后统一写回。
+    最终本地边界仍由 LocalShellBackend 做 macOS/Windows 路径校验与写入保护。
+    """
+
+    return [
+        FilesystemPermission(
+            operations=["read"],
+            paths=[
+                "/projects/**",
+                "/skills/**",
+                "/policies/**",
+                "/reviews/**",
+                "/runtimes/**",
+                "/logs/**",
+                "/tmp/**",
+                "/memories/**",
+            ],
+            mode="allow",
+        ),
+        FilesystemPermission(
+            operations=["write"],
+            paths=(
+                ["/projects/**", "/reviews/**", "/tmp/**"]
+                if task_kind == "coding"
+                else ["/reviews/**", "/tmp/**"]
+            ),
+            mode="allow",
+        ),
+        FilesystemPermission(
+            operations=["write"],
+            paths=[
+                "/projects/**",
+                "/skills/**",
+                "/policies/**",
+                "/runtimes/**",
+                "/logs/**",
+                "/memories/**",
+            ],
+            mode="deny",
+        ),
+        FilesystemPermission(
+            operations=["read", "write"],
+            paths=["/**"],
+            mode="deny",
+        ),
+    ]
 
 def _task_kind_from_config(configurable: dict[str, Any]) -> TaskKind:
     """从 config 中读取任务类型，非法值统一回退为 coding。"""
@@ -213,28 +397,48 @@ def get_agent(config: RunnableConfig):
         configurable["_repo_memory_content"] = repo_memory_content
 
     # PR 创建和评论属于远端写操作，只向 coding Agent 注册。
-    tools = [fetch_url, web_search, add_review_finding, list_review_findings]
+    tools = [
+        fetch_url, web_search, add_review_finding, list_review_findings,
+        get_github_pull_request_context, load_default_review_rules,
+        get_review_diff_summary, validate_review_finding_location,
+    ]
     if task_kind == "coding":
         # coding 任务注册 PR 创建和评论工具
         tools.extend([open_github_pull_request, publish_github_pr_comment])
+
+    # 主 Agent 与子 Agent 共用同一模型客户端，避免重复初始化连接与配置。
+    main_model = make_main_model()
 
     # 顺序代表调用链：先清洗模型历史和注入上下文，再校验工具输入并兜底工具异常。
     middleware = [
         MessageSanitizeMiddleware(),  # 清洗模型历史和用户输入中的无效内容
         ContextInjectionMiddleware(),  # 注入仓库记忆内容
         SanitizeToolInputsMiddleware(backend=backend),  # 校验工具输入
+        create_summarization_tool_middleware(main_model, agent_backend),
+        ModelCallLimitMiddleware(run_limit=MODEL_CALL_RECURSION_LIMIT, exit_behavior="end"),
         ToolErrorMiddleware(backend=backend),  # 统一工具异常处理
-        MemoryUpdateMiddleware(),  # 更新仓库记忆
     ]
+
+    logger.info("返回带 backend 的 Agent：thread_id=%s task_kind=%s", thread_id, task_kind)
+
     # 创建 DeepAgent
     return create_deep_agent(
-        model=make_main_model(),  # 使用主模型
+        model=main_model,  # 使用主模型
         tools=tools,  # 注册工具
         system_prompt=get_system_prompt(task_kind),  # 使用任务类型对应的系统提示词
+        subagents=[_general_purpose_subagent(main_model), _code_reviewer_subagent(main_model)],
         middleware=middleware,  # 使用中间件
         backend=agent_backend,  # 使用仓库后端
+        permissions=_agent_filesystem_permissions(task_kind),
         skills=["/skills/"],  # 从工作区加载内置和用户扩展的 skills
-        memory=memory_paths,  # 使用仓库记忆
-        checkpointer=get_checkpointer(),  # 使用检查点
+        # 使用仓库记忆
+        # memory 只声明 Agent 可以访问的长期记忆文件路径；
+        # 具体读写会通过上面的 /memories/ StoreBackend 路由完成。
+        memory=memory_paths,
+
+        # 使用检查点
+        # checkpointer 是聊天历史、工具消息和图状态的权威来源。
+        # 前端历史恢复应读取 checkpoint，不应读取业务 Store 事件。
+        checkpointer=get_checkpointer(),
         store=get_langgraph_store(),  # 使用 LangGraph Store
     ).with_config(config)

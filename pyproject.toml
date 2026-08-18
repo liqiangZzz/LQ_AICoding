@@ -36,4 +36,4 @@ build-backend = "setuptools.build_meta"
 include = ["agent*"]
 
 [tool.setuptools.package-data]
-agent = ["memory/*.md", "skills/*/SKILL.md"]
+agent = ["memory/*.md", "reviewer_rules/*.md", "skills/*/SKILL.md"]

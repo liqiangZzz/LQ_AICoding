@@ -20,6 +20,11 @@ class ServerAgentPermissionsTests(unittest.TestCase):
                 return_value=(backend, None, None),
             ),
             patch.object(server, "make_main_model", return_value=MagicMock()),
+            patch.object(
+                server,
+                "create_summarization_tool_middleware",
+                return_value=MagicMock(),
+            ),
             patch.object(server, "get_checkpointer", return_value=MagicMock()),
             patch.object(server, "get_langgraph_store", return_value=MagicMock()),
             patch.object(server, "create_deep_agent", return_value=agent) as create_deep_agent,
@@ -46,6 +51,32 @@ class ServerAgentPermissionsTests(unittest.TestCase):
         self._build("review")
 
         self.assertEqual(self.create_agent_call.kwargs["skills"], ["/skills/"])
+
+    def test_review_agent_permissions_do_not_allow_project_or_memory_writes(self) -> None:
+        self._build("review")
+
+        permissions = self.create_agent_call.kwargs["permissions"]
+        write_allow_paths = {
+            path
+            for permission in permissions
+            if permission.mode == "allow" and "write" in permission.operations
+            for path in permission.paths
+        }
+        self.assertNotIn("/projects/**", write_allow_paths)
+        self.assertNotIn("/memories/**", write_allow_paths)
+
+    def test_coding_agent_permissions_allow_project_writes_only(self) -> None:
+        self._build("coding")
+
+        permissions = self.create_agent_call.kwargs["permissions"]
+        write_allow_paths = {
+            path
+            for permission in permissions
+            if permission.mode == "allow" and "write" in permission.operations
+            for path in permission.paths
+        }
+        self.assertIn("/projects/**", write_allow_paths)
+        self.assertNotIn("/memories/**", write_allow_paths)
 
 
 if __name__ == "__main__":
