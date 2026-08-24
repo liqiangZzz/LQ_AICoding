@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 120" role="img" aria-label="AI ">
+  <rect width="420" height="120" fill="white"/>
+  <circle cx="58" cy="60" r="36" fill="#ff3b4f"/>
+  <path d="M38 46c14-20 38-18 52 2-13-7-24-5-31 3 14 1 25 10 30 24-11-10-23-13-36-8-7 3-13 2-18-4 8 0 14-2 18-7-8-2-13-5-15-10z" fill="white"/>
+  <text x="112" y="55" font-family="Microsoft YaHei, Arial, sans-serif" font-size="34" font-weight="700" fill="#111">AI</text>
+  <text x="113" y="84" font-family="Arial, sans-serif" font-size="16" fill="#222">www.ai.com</text>
+</svg>

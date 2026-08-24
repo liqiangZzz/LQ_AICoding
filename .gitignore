@@ -27,3 +27,6 @@ ui/node_modules/
 ui/.tanstack/tmp/
 ui/tsconfig.tsbuildinfo
 ui/.output/
+
+# UI 构建产物
+ui/dist/
