@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.messages import BaseMessage
 
@@ -15,6 +15,10 @@ from agent.tools.github_api import mask_token
 
 # 事件结构、Checkpoint 区别和前端写入策略见同目录 `streaming_runtime_说明.md`。
 logger = logging.getLogger("agent.run.streaming")
+
+# 由 FastAPI SSE 层传入的事件回调。
+# streaming_runtime 不直接依赖 Response/EventSource，只把解析出的业务事件往外抛。
+StreamEventSink = Callable[[str, dict[str, Any]], None]
 
 
 def _safe_attr(value: Any, name: str, default: Any = None) -> Any:
@@ -115,15 +119,20 @@ def _event_payloads(event: Any) -> list[Any]:
         return []
     if isinstance(data, list):
         return data
+
+    #  兼容性处理：如果 data 是元组（LangGraph v3 特有的格式）
+    #  说明：LangGraph v3 通常会把数据包裹成 (真正的数据, 元数据) 这样的元组。
+    #  比如 data = ({"event": "content-block-delta", ...}, {"id": "123"})
+    #  我们只需要取第 0 项（真正的数据），忽略第 1 项（元数据），统一转成列表返回。
     if isinstance(data, tuple):
-        # LangGraph v3 的真实 messages 事件形态通常是：
-        # params.data = (payload, metadata)。第 0 项才是 content-block-delta 等正文事件。
         return [data[0]] if data else []
+
+    # 兜底：如果是单个字典（没有套娃），直接用列表包起来，保证统一格式
     return [data]
 
 
 def _text_delta_from_event(event: Any) -> str:
-    """按官方 raw event 协议提取正文 token。
+    """按官方 raw event 协议提取正文 assistant 文本 token。
 
     Deep Agents 文档建议 UI 需要精确流式正文时直接读取 raw protocol events：
     method=messages、event=content-block-delta、delta.type=text-delta。
@@ -140,9 +149,64 @@ def _text_delta_from_event(event: Any) -> str:
         block = payload.get("delta") or {}
         if not isinstance(block, dict):
             continue
+
+        # 只看增量类型为 "text-delta"（纯文本增量）
+        # 这样可以过滤掉 "tool_use"（工具调用）或 "thinking"（思考过程）等非展示文本
         if block.get("type") == "text-delta":
+            # 提取出真正的文本内容，即使为空也转为字符串，防止报错
             deltas.append(str(block.get("text") or ""))
+    # 将所有分散的文本碎片拼接成一个完整的字符串
     return "".join(deltas)
+
+
+def _text_block_marker_from_event(event: Any) -> tuple[str, int | None] | None:
+    """识别 raw messages 中的文本块边界。
+
+    DeepAgents v3 会把 assistant 的一次回复拆成若干 content block。
+    只有`content-block-delta/text-delta` 真正携带 token，但 `content-block-start`
+    和 `content-block-finish` 能告诉我们“这一段 assistant 文本开始/结束了”。
+
+    这里返回：
+    - `("start", index)`：新的文本块开始，后续 token 应进入新的 AIMessage。
+    - `("finish", index)`：当前文本块结束，后续非空文本应开启下一条 AIMessage。
+
+    不同小版本的 payload 字段可能略有差异，所以只做保守识别；识别不到时返回 None，
+    调用方会继续把 token 归入当前文本块。
+    """
+
+    #  读取 raw messages 事件中的第一个 payload。
+    payload = _message_event_payload(event)
+    if not isinstance(payload, dict):
+        return None
+
+    #  事件名称
+    event_name = str(payload.get("event") or "")
+    #  块索引
+    index_value = payload.get("index")
+    try:
+        block_index = int(index_value) if index_value is not None else None
+    except (TypeError, ValueError):
+        block_index = None
+
+    if event_name == "content-block-start":
+        # 文本块开始时，后续 delta 应该进入新的 AIMessage。
+        content = payload.get("content")
+        if isinstance(content, dict):
+            content_type = str(content.get("type") or "")
+            if content_type in {"text", "text_delta", "output_text"}:
+                return "start", block_index
+        # 有些版本的 text block start 不带 content.type；只要不是工具调用块，就按文本块处理。
+        if not isinstance(content, dict) or str(content.get("type") or "") not in {"tool_call", "tool_call_chunk"}:
+            return "start", block_index
+
+    if event_name == "content-block-finish":
+        # 文本块结束时，当前累计文本必须最后刷新一次，避免尾部内容丢失。
+        content = payload.get("content")
+        if isinstance(content, dict) and str(content.get("type") or "") in {"tool_call", "tool_call_chunk"}:
+            return None
+        return "finish", block_index
+
+    return None
 
 
 def _message_event_payload(event: Any) -> dict[str, Any] | None:
@@ -164,6 +228,7 @@ def _tool_chunk_from_message_event(event: Any) -> dict[str, Any] | None:
     write_todos 的 JSON 参数会以 fields.args 逐步增长。
     """
 
+    #  读取 raw messages 事件中的第一个 payload。
     payload = _message_event_payload(event)
     if not payload:
         return None
@@ -454,6 +519,59 @@ def _record_stream_message(thread_id: str, run_id: str, text: str) -> None:
     )
 
 
+def _record_assistant_stream_message(
+        thread_id: str,
+        run_id: str,
+        index: int,
+        text: str,
+        *,
+        event_sink: StreamEventSink | None = None,
+) -> None:
+    """把某一段非空 assistant 文本写成独立的前端事件。
+
+    `stream:{run_id}:assistant:{index}` 表示运行过程中第 index 段 assistant 文本。
+    前端会把不同 index 展示成不同的
+    AIMessage，因此 Todo 后面的“正在说明/总结/代码处理过程”不会互相覆盖。
+    """
+
+    if not text.strip():
+        return
+    # record_event 是后端持久化/兜底通道；event_sink 是本轮 SSE 实时通道。
+    # 两者都使用同一个 run_id + assistant_index，避免刷新和实时显示的 id 规则不一致。
+    record_event(
+        thread_id,
+        f"stream:{run_id}:assistant:{index}",
+        "正在生成内容",
+        kind="other",
+        status="in_progress",
+        detail=json.dumps({"text": text}, ensure_ascii=False),
+    )
+    if event_sink is not None:
+        message_id = f"{thread_id}-live-assistant-{run_id}-{index}"
+        # message_start 保证前端先创建一条 AIMessage 容器，再接收 text_delta。
+        event_sink(
+            "message_start",
+            {
+                "message_id": message_id,
+                "author": "agent",
+                "run_id": run_id,
+                "assistant_index": str(index),
+            },
+        )
+        event_sink(
+            "text_delta",
+            {
+                "message_id": message_id,
+                "run_id": run_id,
+                "assistant_index": str(index),
+                "content": text,
+                # replace 表示这里传的是“当前累计全文”，不是单 token 增量。
+                # 前端应整体替换该 message 的内容，避免重复拼接。
+                "mode": "replace",
+            },
+        )
+
+
 def _tool_event_from_raw(event: Any) -> dict[str, Any] | None:
     """读取 raw tools 生命周期事件。"""
 
@@ -588,7 +706,14 @@ def _consume_interleaved_stream(*, stream: Any, thread_id: str, run_id: str) -> 
     return tool_call_index, subagent_index
 
 
-def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_kind: str | None = None) -> tuple[int, int]:
+def _consume_raw_event_stream(
+        *,
+        stream: Any,
+        thread_id: str,
+        run_id: str,
+        task_kind: str | None = None,
+        event_sink: StreamEventSink | None = None,
+) -> tuple[int, int]:
     """按官网 raw protocol event 消费 DeepAgents 输出。
 
     这个函数解决“技术方案正文只能最终一次性展示”的问题：
@@ -598,62 +723,144 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
        工具步骤和子 Agent 生命周期展示。
 
     如果某个 DeepAgents 小版本没有在 raw event 中暴露 tool_calls，工具内部的 record_event
-    仍然会记录读文件、命令、GitHub 等步骤；但 write_todos 只有 raw tool_calls 可见时才会出现。
+    仍然会记录读文件、命令、Gitee 等步骤；但 write_todos 只有 raw tool_calls 可见时才会出现。
     """
+
+    '''
+    assistant_message_index	当前是第几段 assistant 文本
+    current_assistant_index	当前正在接收 token 的 assistant 文本块 ID
+    current_assistant_text	当前 assistant 文本累计内容
+    last_flushed_length	上次已经推给前端的文本长度
+    tool_call_index	工具调用计数
+    subagent_index	子 Agent 事件计数
+    write_todo_args_by_call	记录某个 write_todos 工具调用目前累计到的 args
+    write_todo_last_payload_by_call	避免重复发送相同 todo
+    saw_write_todos	本轮是否看到了任务计划工具
+    '''
 
     tool_call_index = 0
     subagent_index = 0
-    accumulated_message_text = ""
+    assistant_message_index = 0
+    current_assistant_index = 0
+    current_assistant_text = ""
     last_flushed_length = 0
     write_todo_args_by_call: dict[str, str] = {}
     write_todo_last_payload_by_call: dict[str, str] = {}
     saw_write_todos = False
     limit_tracker = AgentRunLimitTracker(task_kind=task_kind)
 
-    # 单次遍历同时处理四类事件。判断顺序不能随意调整：文本 delta 最常见，先处理并
-    # continue 可以避免同一 message 事件又被误判成工具事件。
     for event in stream:
+        # 每个 raw event 都先交给保护器计数。它可以识别模型调用过多、工具循环等异常。
         limit_tracker.observe_event(event)
+        # 检查文本块标记
+        marker = _text_block_marker_from_event(event)
+        if marker is not None:
+            # marker_kind: "start" | "finish"
+            # _block_index: 当前文本块的索引
+            marker_kind, _block_index = marker
+            if marker_kind == "start":
+                # 新文本块开始前，如果上一段还有未刷新的尾巴，先落库/推送。
+                if current_assistant_text and last_flushed_length != len(current_assistant_text):
+                    _record_assistant_stream_message(
+                        thread_id,
+                        run_id,
+                        current_assistant_index or assistant_message_index or 1,
+                        current_assistant_text,
+                        event_sink=event_sink,
+                    )
+                assistant_message_index += 1
+                current_assistant_index = assistant_message_index
+                current_assistant_text = ""
+                last_flushed_length = 0
+                continue
+            if marker_kind == "finish":
+                # 文本块结束时做最终刷新，然后清空当前块状态。
+                if current_assistant_text and last_flushed_length != len(current_assistant_text):
+                    _record_assistant_stream_message(
+                        thread_id,
+                        run_id,
+                        current_assistant_index or assistant_message_index or 1,
+                        current_assistant_text,
+                        event_sink=event_sink,
+                    )
+                current_assistant_index = 0
+                current_assistant_text = ""
+                last_flushed_length = 0
+                continue
 
-        # 1. 模型正文：按字符阈值合并后写入事件表，降低 SQLite 写入频率。
+        # 检查文本块 delta
         delta = _text_delta_from_event(event)
         if delta:
-            accumulated_message_text += delta
+            if current_assistant_index == 0:
+                # 有些模型流不会显式给 content-block-start，这里按第一个 delta 自动开块。
+                assistant_message_index += 1
+                current_assistant_index = assistant_message_index
+                current_assistant_text = ""
+                last_flushed_length = 0
+            current_assistant_text += delta
+
+            # 检查是否需要刷新文本块
             if _should_flush_stream_text(
-                accumulated_text=accumulated_message_text,
-                last_flushed_length=last_flushed_length,
-                delta=delta,
+                    accumulated_text=current_assistant_text,
+                    last_flushed_length=last_flushed_length,
+                    delta=delta,
             ):
-                _record_stream_message(thread_id, run_id, accumulated_message_text)
-                last_flushed_length = len(accumulated_message_text)
+                _record_assistant_stream_message(
+                    thread_id,
+                    run_id,
+                    current_assistant_index,
+                    current_assistant_text,
+                    event_sink=event_sink,
+                )
+                last_flushed_length = len(current_assistant_text)
             continue
 
-        # 2. 工具参数流：write_todos 的 JSON 可能分多次到达，需要按 call_id 累积状态。
+        # 检查工具调用 chunk
         tool_chunk = _tool_chunk_from_message_event(event)
         if tool_chunk is not None:
             tool_name = str(tool_chunk.get("name") or "")
             if tool_name == "write_todos":
+                # write_todos 的参数本身就是任务清单，因此要尽早解析出来给前端展示。
                 saw_write_todos = True
                 call_id = str(tool_chunk.get("id") or tool_chunk.get("tool_call_id") or "write_todos")
                 args = tool_chunk.get("args")
                 if isinstance(args, dict):
+                    # 完整 dict：通常代表工具调用参数已经完整。
                     todos = _extract_todos({"input": args})
                     payload_text = json.dumps(todos, ensure_ascii=False)
+
+                    # 只有当 payload_text 发生变化时才记录
                     if payload_text != write_todo_last_payload_by_call.get(call_id):
-                        _record_todos(thread_id, run_id, call_id, todos, status="completed")
+                        _record_todos(
+                            thread_id,
+                            run_id,
+                            call_id,
+                            todos,
+                            status="completed",
+                            event_sink=event_sink,
+                        )
                         write_todo_last_payload_by_call[call_id] = payload_text
                 elif isinstance(args, str):
+                    # 字符串 chunk：JSON 可能还没闭合，用正则提取已完整的 todo。
                     write_todo_args_by_call[call_id] = args
                     todos = _todos_from_args_text(args)
                     payload_text = json.dumps(todos, ensure_ascii=False)
                     if todos and payload_text != write_todo_last_payload_by_call.get(call_id):
-                        _record_todos(thread_id, run_id, call_id, todos, status="in_progress")
+                        _record_todos(
+                            thread_id,
+                            run_id,
+                            call_id,
+                            todos,
+                            status="in_progress",
+                            event_sink=event_sink,
+                        )
                         write_todo_last_payload_by_call[call_id] = payload_text
             continue
 
-        # 3. 完整工具调用及工具生命周期事件：主要用于前端任务清单展示。
+        # 检查工具调用
         tool_call = _tool_call_from_event(event)
         if tool_call is not None:
+            # 老版本/其它事件流形态可能把工具调用放在 method=tool_calls。
             tool_call_index += 1
             if _record_write_todos(thread_id, run_id, tool_call, tool_call_index):
                 saw_write_todos = True
@@ -666,8 +873,10 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
             )
             continue
 
+        # 检查工具事件
         tool_event = _tool_event_from_raw(event)
         if tool_event is not None:
+            # method=tools 是另一种工具生命周期事件。这里主要用于补充 write_todos 状态。
             tool_name = str(tool_event.get("tool_name") or "")
             if tool_name == "write_todos":
                 saw_write_todos = True
@@ -678,28 +887,46 @@ def _consume_raw_event_stream(*, stream: Any, thread_id: str, run_id: str, task_
                     payload_text = json.dumps(todos, ensure_ascii=False)
                     if todos and payload_text != write_todo_last_payload_by_call.get(call_id):
                         event_status = "completed" if tool_event.get("event") == "tool-finished" else "in_progress"
-                        _record_todos(thread_id, run_id, call_id, todos, status=event_status)
+                        _record_todos(
+                            thread_id,
+                            run_id,
+                            call_id,
+                            todos,
+                            status=event_status,
+                            event_sink=event_sink,
+                        )
                         write_todo_last_payload_by_call[call_id] = payload_text
             continue
 
-        # 4. 子智能体事件：当前只记录生命周期摘要，不保存其完整内部消息。
+        # 检查子 Agent 事件
         subagent = _subagent_from_event(event)
         if subagent is not None:
+            # 子 Agent 事件只做简洁记录，详细分析报告仍来自 assistant 文本。
             subagent_index += 1
             _record_subagent(thread_id, run_id, subagent, subagent_index)
 
-    if accumulated_message_text and last_flushed_length != len(accumulated_message_text):
-        _record_stream_message(thread_id, run_id, accumulated_message_text)
+    # 流结束时刷新剩余文本
+    if current_assistant_text and last_flushed_length != len(current_assistant_text):
+        # 流结束后兜底刷新一次，避免最后不足 24 字且没有换行的文本丢失。
+        _record_assistant_stream_message(
+            thread_id,
+            run_id,
+            current_assistant_index or assistant_message_index or 1,
+            current_assistant_text,
+            event_sink=event_sink,
+        )
+
+    # 返回工具调用次数 和 子 Agent 调用次数
     return tool_call_index if saw_write_todos else 0, subagent_index
 
 
 def run_agent_with_event_stream(
-    *,
-    agent: Any,
-    thread_id: str,
-    run_id: str,
-    content: str,
-    task_kind: str | None = None,
+        *,
+        agent: Any,
+        thread_id: str,
+        run_id: str,
+        content: str,
+        task_kind: str | None = None,
 ) -> dict[str, Any]:
     """使用官方 v3 event streaming 驱动 DeepAgent。
 
@@ -709,6 +936,16 @@ def run_agent_with_event_stream(
     - 每一轮运行都把 run_id 写进事件 id，保证 plan、coding、review 多轮内容
       不会在前端互相覆盖或拼接到同一个消息里。
     - 前端仍只消费我们自己的 `/dashboard/api/.../stream`，不用绑定 LangGraph 本地服务。
+
+    Args:
+        agent:  DeepAgent 实例，
+        thread_id: 会话 ID,
+        run_id: 运行 ID,
+        content: 输入内容,
+        task_kind: 任务类型,
+
+    Returns:
+        dict: 包含 messages 和 raw_output 两个字段。
     """
 
     stream = agent.stream_events(
@@ -716,11 +953,14 @@ def run_agent_with_event_stream(
         version="v3",
         config={"configurable": {"thread_id": thread_id}},
     )
+    # 记录调用开始
     record_event(thread_id, "model", "调用 deepseek-v4-pro", kind="other", status="in_progress")
+    # 调试用：记录真实 raw event 结构
     _debug_raw_stream_events(agent=agent, thread_id=thread_id, content=content)
     # raw protocol events 是当前版本里唯一能拿到 token/chunk 的通道。
     # 这里同时解析 text-delta 和 write_todos 的 tool_call_chunk，保证正文和任务计划都能流式更新。
     try:
+        # 消费 raw event stream
         tool_call_index, subagent_index = _consume_raw_event_stream(
             stream=stream,
             thread_id=thread_id,
