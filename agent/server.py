@@ -371,6 +371,7 @@ def get_agent(config: RunnableConfig):
     # langchain ：默认递归深度为 20
     config["recursion_limit"] = config.get("recursion_limit", DEFAULT_RECURSION_LIMIT)
 
+    # 如果没有 thread_id 或不是执行态，返回空 Agent
     if not isinstance(thread_id, str) or not thread_id or not graph_loaded_for_execution(config):
         logger.info("没有 thread_id 或不是执行态，返回空 Agent")
         return create_deep_agent(system_prompt='', tools=[]).with_config(config)
@@ -378,7 +379,7 @@ def get_agent(config: RunnableConfig):
     # Agent 每轮重新构建，但同一会话复用 LocalShellBackend，避免重复初始化工作区。
     backend = ensure_backend_for_thread(thread_id)
 
-    # 任务类型同时决定系统提示词和允许注册的外部写工具。
+    # 从配置读取任务类型，任务类型同时决定系统提示词和允许注册的外部写工具。
     task_kind = _task_kind_from_config(configurable)
 
     # 除 coding 外都启用文件只读模式。sync 仍可执行后端白名单中的 clone/fetch/pull，
@@ -387,6 +388,9 @@ def get_agent(config: RunnableConfig):
     repo_url = configurable.get("repo_url")
 
     # 预先初始化并读取仓库记忆，再交给中间件注入，避免一次请求重复查询 Store。
+    # server.py 在创建 Agent 之前，已经顺手读到了当前仓库记忆内容；
+    # 那就把内容放进 config，后面的 ContextInjectionMiddleware 直接用，
+    # 避免 middleware 再查一次 LangGraph Store。
     agent_backend, memory_paths, repo_memory_content = _prepare_repo_backend_context(
         repo_url=repo_url,
         backend=backend,
@@ -395,6 +399,12 @@ def get_agent(config: RunnableConfig):
     # 如果有仓库记忆内容则注入
     if repo_memory_content:
         configurable["_repo_memory_content"] = repo_memory_content
+
+    def backend_factory(_runtime: object, _thread_id: str = thread_id) -> Any:
+        # DeepAgents 0.6.x 直接传入带命令执行能力的 backend 时，和 permissions
+        # 组合仍有兼容限制；因此这里保留 factory 形式，同时返回已经准备好的
+        # thread 级 backend。Agent 实例可以按请求重建，backend 和工作区继续复用。
+        return agent_backend
 
     # PR 创建和评论属于远端写操作，只向 coding Agent 注册。
     tools = [
@@ -426,16 +436,15 @@ def get_agent(config: RunnableConfig):
         model=main_model,  # 使用主模型
         tools=tools,  # 注册工具
         system_prompt=get_system_prompt(task_kind),  # 使用任务类型对应的系统提示词
-        subagents=[_general_purpose_subagent(main_model), _code_reviewer_subagent(main_model)],
+        subagents=[_general_purpose_subagent(main_model), _code_reviewer_subagent(main_model)], # 注册子 Agent
         middleware=middleware,  # 使用中间件
-        backend=agent_backend,  # 使用仓库后端
-        permissions=_agent_filesystem_permissions(task_kind),
+        backend=backend_factory,  # 使用仓库后端
+        permissions=_agent_filesystem_permissions(task_kind),  # 主 Agent 的文件权限
         skills=["/skills/"],  # 从工作区加载内置和用户扩展的 skills
         # 使用仓库记忆
         # memory 只声明 Agent 可以访问的长期记忆文件路径；
         # 具体读写会通过上面的 /memories/ StoreBackend 路由完成。
         memory=memory_paths,
-
         # 使用检查点
         # checkpointer 是聊天历史、工具消息和图状态的权威来源。
         # 前端历史恢复应读取 checkpoint，不应读取业务 Store 事件。
