@@ -14,6 +14,8 @@ from agent.store import get_local_store
 from agent.tools.reviewer_diff import get_local_diff_summary, validate_finding_location
 from agent.tools.runtime_context import get_runtime_thread_id
 
+
+# 默认规则文件路径
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[1] / "reviewer_rules" / "default_review_rules.md"
 
 
@@ -32,7 +34,7 @@ def load_default_review_rules() -> dict[str, Any]:
     这个工具只做兜底读取，不再访问 `/policies` 或 `/projects`。
     Reviewer 子 Agent 应优先通过 DeepAgents 原生 `read_file` 读取：
 
-    - `/policies/review_rules.md`：课程工作区的通用审查规则；
+    - `/policies/review_rules.md`：工作区的通用审查规则；
     - `/projects/<repo>/.lq/review-rules.md`：仓库自己的补充审查规则。
 
     只有这些规则文件不存在或为空时，才调用本工具读取项目内置默认规则。

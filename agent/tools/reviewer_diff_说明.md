@@ -1,4 +1,4 @@
-# reviewer_diff.py 说明：diff 解析与 finding 位置校验
+# 说明：diff 解析与 finding 位置校验
 
 > 对应源码：`agent/tools/reviewer_diff.py`
 >
