@@ -1,20 +1,3 @@
-import logging
-from typing import Any
-
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import SystemMessage
-from langgraph.config import get_config
-from langgraph.runtime import Runtime
-
-from agent.core.graph import get_langgraph_store
-from agent.core.repo_memory import (
-    build_repo_memory_namespace,
-    repo_memory_store_key,
-    repo_memory_virtual_path,
-)
-from agent.tools.github_api import mask_token, parse_github_repo_url
-
 """仓库级上下文注入中间件。
 
 这个中间件解决的是“Agent 每一轮都从零开始理解仓库”的问题。
@@ -33,6 +16,24 @@ StoreBackend 暴露为类似 `/memories/{owner}/{repo}.md` 的虚拟文件。
 3. 这里不写入记忆。记忆写回由 runtime.py 主路径和 MemoryUpdateMiddleware
    兜底路径负责。
 """
+
+import logging
+from typing import Any
+
+from langchain.agents import AgentState
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import SystemMessage
+from langgraph.config import get_config
+from langgraph.runtime import Runtime
+
+from agent.core.graph import get_langgraph_store
+from agent.core.repo_memory import (
+    build_repo_memory_namespace,
+    repo_memory_store_key,
+    repo_memory_virtual_path,
+)
+from agent.tools.github_api import mask_token, parse_github_repo_url
+
 
 logger = logging.getLogger("agent.run.middleware.context_injection")
 
@@ -82,6 +83,7 @@ def _build_repo_content_notice(
 
     无论记忆文件是否存在，都至少注入仓库标识和记忆文件路径，让 Agent 知道
     自己在哪个仓库工作、可以从哪里读取长期上下文。
+    ContextInjectionMiddleware 的模式——基础上下文始终注入，不因文件不存在就跳过。
 
     这条 SystemMessage 只用于“提示模型当前仓库背景”，不作为权限边界。
     真正的读写边界仍然由 LocalShellBackend、工具参数清洗中间件和权限校验代码控制。

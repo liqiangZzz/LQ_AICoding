@@ -56,6 +56,18 @@ def build_initial_repo_memory(*, repo: GitHubRepo, project_dir: str) -> str:
             """
 
 
+def repo_project_dir(repo: GitHubRepo) -> str:
+    """根据 GitHub 仓库信息生成固定的本地项目目录。
+
+    课程版第一版本不再维护“仓库 URL -> 本地目录”的 SQLite 映射表。
+    只要前端传入 GitHub 仓库地址，后端就可以从 URL 解析出 repo 名称，
+    并稳定落到 `/projects/<repo>`。这样本地目录、命令目录和仓库记忆路径
+    都由同一个 owner/repo 规则推导，避免多套映射关系互相覆盖。
+    """
+
+    return f"projects/{repo.repo}"
+
+
 def build_repo_memory_namespace(owner: str, repo: str) -> tuple[str, ...]:
     """生成仓库级长期记忆的 StoreBackend namespace。
 

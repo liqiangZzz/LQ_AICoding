@@ -30,7 +30,7 @@ class RepoMappingResult:
 
 def normalize_github_repo_url(repo_url: str) -> str:
     """
-    把带 token、无、.git、www 域名等形式统一成标准 GitHub clone_url
+    把带 token、无 .git、www 域名等形式统一成标准 GitHub clone_url
 
     仓库映射表使用这个标准地址作为唯一业务间，避免同一个仓库因为不同写法生成多条映射。
     """
@@ -151,14 +151,18 @@ def discover_repo_mapping(
     # 映射不能只相信数据库：目录可能被移动，remote 也可能被用户手动修改。
     # 因此每次使用前都重新读取 .git/config 验证 origin。
     repo = parse_github_repo_url(repo_url)
+
     # 读取已保存的映射
     existing = store.get_repo_mapping(repo.clone_url)
+
     # 1. 按仓库名检查 `projects/仓库名`。
     if existing:
         # 第一优先级：相信已经保存过的 active 映射，但必须重新验证。
         # 目录可能被用户删除、移动，或者 remote origin 被手动改到另一个仓库。
         # 所以这里不仅看 SQLite，还要读本地 .git/config 做二次确认。
         project_dir = str(existing["project_dir"]).replace("\\", "/")
+
+        #  检查目录是否落入错误的 projects/projects 子目录
         if _is_nested_projects_dir(project_dir):
             project_dir = ""
         if not project_dir:
@@ -169,8 +173,10 @@ def discover_repo_mapping(
             local_path = workspace.resolve(project_dir)
             remote = _read_origin_remote(local_path)
 
-        if local_path and local_path.exists() and (local_path / ".git").exists() and remote_matches_repo(remote,
-                                                                                                         repo.clone_url):
+        if (local_path and local_path.exists()
+                and (local_path / ".git").exists()
+                and remote_matches_repo(remote,repo.clone_url)):
+
             store.mark_repo_mapping_verified(str(existing["id"]), notes="映射已通过本地 remote 验证")
             return RepoMappingResult(
                 repo=repo,
@@ -189,8 +195,8 @@ def discover_repo_mapping(
     default_remote = _read_origin_remote(default_path)
 
     # 检查默认目录是否存在且匹配
-    if default_path.exists() and (default_path / ".git").exists() and remote_matches_repo(default_remote,
-                                                                                          repo.clone_url):
+    if (default_path.exists() and (default_path / ".git").exists()
+            and remote_matches_repo(default_remote,repo.clone_url)):
         # 第二优先级：按仓库名匹配默认目录。
         # 这是最常见的情况：第一次 clone 后通常就是 projects/<repo>。
         # 命中后立即写回映射表，后续任务就可以走 stored 分支。

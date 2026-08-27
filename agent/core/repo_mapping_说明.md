@@ -28,8 +28,10 @@ runtime/server -> discover_repo_mapping()
 
 1. 读取业务 SQLite 中保存的 active 映射。
 2. 验证目录仍存在，并读取 `.git/config` 验证 `origin`。
+   - 如果存储的目录落入 `projects/projects` 嵌套路径（如 `projects/projects/<repo>`），视为无效映射并跳过。
 3. 检查默认目录 `projects/<repo>`。
 4. 扫描 `projects/*` 下一层 Git 仓库并比较 remote。
+   - 跳过路径名为 `projects` 的子目录，避免重复扫描嵌套结构。
 5. 都未找到时返回默认 clone 目标，但暂不写入数据库。
 
 只有 clone 成功后，`save_clone_mapping()` 才持久化新映射，避免把不存在的目录标记为有效。

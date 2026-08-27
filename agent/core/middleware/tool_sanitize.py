@@ -37,6 +37,7 @@ PATH_ARGUMENTS = {"path", "cwd", "repo_dir", "project_dir", "file_path", "old_pa
 GITHUB_URL_ARGUMENTS = {"repo_url"}
 # DeepAgents read_file 的 offset/limit 容易被模型生成为字符串，这里做轻量纠正。
 READ_FILE_INT_ARGUMENTS = {"offset", "limit"}
+# DeepAgents 虚拟绝对路径的根目录白名单，命中时直接放行，不当作宿主机绝对路径处理。
 VIRTUAL_ROOTS = {"projects", "skills", "policies", "reviews", "runtimes", "tmp", "logs"}
 
 
@@ -237,9 +238,6 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
     运行在 DeepAgents 工具调用生命周期中，因此可以同时覆盖自定义 GitHub 工具 和 DeepAgents 原生的文件/命令工具。
     LocalShellBackend 仍是最终安全边界，这里主要负责把常见错误参数转换成 Agent 可恢复的中文反馈。
     """
-
-    #  指定状态类型，表示该 middleware 只能用于 AgentState 类型的状态
-    state_schema = AgentState
 
     def __init__(self, *, backend: LocalShellBackend) -> None:
         super().__init__()

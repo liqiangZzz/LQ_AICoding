@@ -111,9 +111,11 @@ def _event_payloads(event: Any) -> list[Any]:
 
     if not isinstance(event, dict):
         return []
+
     params = event.get("params")
     if not isinstance(params, dict):
         return []
+
     data = params.get("data")
     if data is None:
         return []
@@ -214,6 +216,8 @@ def _message_event_payload(event: Any) -> dict[str, Any] | None:
 
     if not isinstance(event, dict) or event.get("method") != "messages":
         return None
+
+    #  读取第一个 payload
     for payload in _event_payloads(event):
         if isinstance(payload, dict):
             return payload
@@ -226,30 +230,80 @@ def _tool_chunk_from_message_event(event: Any) -> dict[str, Any] | None:
     当前 DeepAgents 版本会把工具调用参数作为 message content block 输出：
     content-block-delta -> delta.type=block-delta -> fields.type=tool_call_chunk。
     write_todos 的 JSON 参数会以 fields.args 逐步增长。
+
+    工具调用会经历三个阶段：
+    1. content-block-start：工具调用开始，返回工具名等信息
+    2. content-block-delta：工具调用参数增量（逐步传输 JSON 参数片段）
+    3. content-block-finish：工具调用结束，返回完整的工具调用对象
+
+    典型场景：当 Agent 调用 write_todos 时，工具名和参数会以流式方式传输，
+    前端可以实时展示参数构建过程。
     """
 
-    #  读取 raw messages 事件中的第一个 payload。
+    # ========== 第一步：尝试读取事件中的 payload 数据 ==========
+    # 所有的 messages 事件都包含一个 payload 字段，里面包含了具体的消息内容
     payload = _message_event_payload(event)
     if not payload:
         return None
 
+    # ========== 第二阶段：content-block-start（工具调用开始） ==========
+    # 当工具调用开始时，会触发 content-block-start 事件
+    # 示例 payload 结构：
+    # {
+    #     "event": "content-block-start",
+    #     "content": {
+    #         "type": "tool_call_chunk",
+    #         "id": "call_abc123",
+    #         "name": "write_todos",
+    #         "args": ""  # 参数还未开始传输
+    #     }
+    # }
     if payload.get("event") == "content-block-start":
         content = payload.get("content")
+        # 只处理工具调用块（不处理普通文本块）
         if isinstance(content, dict) and content.get("type") == "tool_call_chunk":
             return content
 
+    # ========== 第二阶段：content-block-delta（工具调用参数增量） ==========
+    # 工具调用参数会分多次 delta 逐步传输（适合大 JSON 或流式场景）
+    # 示例 payload 结构：
+    # {
+    #     "event": "content-block-delta",
+    #     "delta": {
+    #         "type": "block-delta",
+    #         "fields": {
+    #             "type": "tool_call_chunk",
+    #             "args": "{\"todos\": ["  # 这是部分 JSON，下次 delta 继续追加
+    #         }
+    #     }
+    # }
     if payload.get("event") == "content-block-delta":
         delta = payload.get("delta")
+        #  只看工具调用块增量
         if isinstance(delta, dict) and delta.get("type") == "block-delta":
             fields = delta.get("fields")
             if isinstance(fields, dict) and fields.get("type") == "tool_call_chunk":
                 return fields
 
+    # ========== 第三阶段：content-block-finish（工具调用结束） ==========
+    # 当工具调用完整结束时，会触发 content-block-finish 事件
+    # 示例 payload 结构：
+    # {
+    #     "event": "content-block-finish",
+    #     "content": {
+    #         "type": "tool_call",
+    #         "id": "call_abc123",
+    #         "name": "write_todos",
+    #         "args": "{\"todos\": [\"任务1\", \"任务2\"]}"  # 完整的 JSON 参数
+    #     }
+    # }
     if payload.get("event") == "content-block-finish":
         content = payload.get("content")
+        # 只处理工具调用块结束（注意这里 type 是 "tool_call"，没有 "_chunk" 后缀）
         if isinstance(content, dict) and content.get("type") == "tool_call":
             return content
 
+    # 如果不是上述三种工具调用相关事件，则返回 None
     return None
 
 
@@ -281,6 +335,7 @@ def _tool_call_from_event(event: Any) -> Any | None:
 
     if not isinstance(event, dict) or event.get("method") != "tool_calls":
         return None
+
     for payload in _event_payloads(event):
         if isinstance(payload, dict):
             return payload
@@ -294,6 +349,7 @@ def _subagent_from_event(event: Any) -> Any | None:
 
     if not isinstance(event, dict) or event.get("method") != "subagents":
         return None
+
     for payload in _event_payloads(event):
         if payload is not None:
             return payload
@@ -328,32 +384,6 @@ def _tool_title(tool_name: str) -> str:
         "task": "委派子任务",
     }
     return mapping.get(tool_name, f"调用工具：{tool_name}")
-
-
-def _tool_kind(tool_name: str) -> str:
-    """把工具名映射成前端已有的工具分类。"""
-
-    if tool_name == "read_file":
-        return "read"
-    if tool_name in {"write_file", "edit_file"}:
-        return "edit"
-    if tool_name in {"ls", "list_files", "glob", "grep"}:
-        return "search"
-    if tool_name in {
-        "sync_github_repo",
-        "create_pull_request",
-        "open_github_pull_request",
-        "publish_github_pr_comment",
-        "get_github_pull_request_context",
-    }:
-        return "fetch"
-    if tool_name in {"web_search", "fetch_url"}:
-        return "fetch"
-    if tool_name in {"load_review_rules", "get_review_diff_summary"}:
-        return "read"
-    if tool_name in {"execute", "run_command"}:
-        return "execute"
-    return "think"
 
 
 def _normalize_todo_status(status: Any) -> str:
@@ -410,10 +440,15 @@ def _record_write_todos(thread_id: str, run_id: str, tool_call: Any, index: int)
     tool_name = str(_safe_field(tool_call, "tool_name", "") or _safe_field(tool_call, "name", "") or "")
     if tool_name != "write_todos":
         return False
+
+    # 提取任务清单
     todos = _extract_todos(tool_call)
     if not todos:
         return True
+
     call_id = str(_safe_field(tool_call, "id", "") or _safe_field(tool_call, "tool_call_id", "") or index)
+
+    # 记录任务清单
     record_event(
         thread_id,
         f"todos:{run_id}:{call_id}",
@@ -458,14 +493,17 @@ def _todos_from_args_text(args_text: str) -> list[dict[str, str]]:
         re.DOTALL,
     )
     for match in pattern.finditer(args_text):
+        # JSON 尚未闭合时，只提取已经完整出现的 todo 对象。
         content = _decode_json_string_fragment(match.group("content")).strip()
+        # 规整状态
         status = _normalize_todo_status(match.group("status"))
         if content:
             todos.append({"content": content, "status": status})
     return todos
 
 
-def _record_todos(thread_id: str, run_id: str, call_id: str, todos: list[dict[str, str]], *, status: str) -> None:
+def _record_todos(thread_id: str, run_id: str, call_id: str, todos: list[dict[str, str]], *, status: str,
+                  event_sink: StreamEventSink | None = None) -> None:
     """写入结构化任务计划事件。"""
 
     if not todos:
@@ -478,6 +516,16 @@ def _record_todos(thread_id: str, run_id: str, call_id: str, todos: list[dict[st
         status=status,
         detail=json.dumps({"todos": todos}, ensure_ascii=False),
     )
+
+    if event_sink is not None:
+        # 立即推给前端，让任务计划列表在工具调用参数逐步生成时也能更新。
+        event_sink(
+            "todo_delta", {
+                "message_id": f"{thread_id}-live-plan-{run_id}",
+                "run_id": run_id,
+                "todos": todos,
+            }
+        )
 
 
 def _message_dict(message: Any) -> dict[str, Any]:
@@ -927,6 +975,7 @@ def run_agent_with_event_stream(
         run_id: str,
         content: str,
         task_kind: str | None = None,
+        event_sink: StreamEventSink | None = None,
 ) -> dict[str, Any]:
     """使用官方 v3 event streaming 驱动 DeepAgent。
 
@@ -943,6 +992,7 @@ def run_agent_with_event_stream(
         run_id: 运行 ID,
         content: 输入内容,
         task_kind: 任务类型,
+        event_sink: 事件流 sink,
 
     Returns:
         dict: 包含 messages 和 raw_output 两个字段。
@@ -955,6 +1005,7 @@ def run_agent_with_event_stream(
     )
     # 记录调用开始
     record_event(thread_id, "model", "调用 deepseek-v4-pro", kind="other", status="in_progress")
+
     # 调试用：记录真实 raw event 结构
     _debug_raw_stream_events(agent=agent, thread_id=thread_id, content=content)
     # raw protocol events 是当前版本里唯一能拿到 token/chunk 的通道。
@@ -966,6 +1017,7 @@ def run_agent_with_event_stream(
             thread_id=thread_id,
             run_id=run_id,
             task_kind=task_kind,
+            event_sink=event_sink,
         )
     except AgentRunLimitExceeded as exc:
         record_event(

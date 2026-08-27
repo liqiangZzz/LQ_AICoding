@@ -7,19 +7,21 @@
 
 | 函数 | 谁调用 | 调用时机 | 作用 |
 |---|---|---|---|
-| `run_agent_with_event_stream()` | `core/runtime.py` | Agent 已构建、即将执行模型任务时 | 创建 v3 事件流并返回最终消息 |
-| `_consume_raw_event_stream()` | `run_agent_with_event_stream()` | 事件流创建后 | 单次遍历正文、todo、工具和子智能体事件 |
+| `run_agent_with_event_stream()` | `core/runtime.py` | Agent 已构建、即将执行模型任务时 | 创建 v3 事件流，接收 `event_sink` 参数并传入事件消费者，返回最终消息 |
+| `_consume_raw_event_stream()` | `run_agent_with_event_stream()` | 事件流创建后 | 单次遍历正文、todo 工具参数块和子智能体事件；`event_sink` 传给 `_record_todos()` 和 `_record_assistant_stream_message()` 用于实时推送 |
 | `_text_delta_from_event()` | `_consume_raw_event_stream()` | 收到每个 `messages` 事件时 | 提取正文增量 |
-| `_tool_chunk_from_message_event()` | `_consume_raw_event_stream()` | 当前事件不是正文增量时 | 提取逐步生成的工具参数 |
-| `_record_stream_message()` | 事件流消费者 | 正文首次出现、达到刷新阈值或流结束时 | 把正文快照写入 `run_events` |
+| `_tool_chunk_from_message_event()` | `_consume_raw_event_stream()` | 当前事件不是正文增量时 | 提取逐步生成的工具参数（三阶段：start / delta / finish） |
+| `_record_assistant_stream_message()` | `_consume_raw_event_stream()` | 正文首次出现、达到刷新阈值或流结束时 | 把某段 assistant 文本写入 `run_events`，并通过 `event_sink` 实时推 `message_start` + `text_delta` 给前端 |
+| `_record_todos()` | `_consume_raw_event_stream()` | 检测到 `write_todos` 参数变化时 | 写入结构化任务清单，并通过 `event_sink` 实时推送 `todo_delta` 事件 |
 | `_debug_raw_stream_events()` | `run_agent_with_event_stream()` | 调试开关为 `1` 时 | 额外请求短调试流，正常环境不执行 |
 
 ```text
 runtime
-  -> run_agent_with_event_stream()
+  -> run_agent_with_event_stream(event_sink)
      -> agent.stream_events(version="v3")
-     -> _consume_raw_event_stream()
+     -> _consume_raw_event_stream(event_sink)
         -> record_event() -> LocalSqliteStore.run_events
+        -> event_sink() -> SSE 实时推送（message_start / text_delta / todo_delta）
      -> 提取 stream.output
 ```
 
@@ -50,10 +52,12 @@ runtime 使用这些可见消息完成：
 
 `run_agent_with_event_stream()` 调用 DeepAgents `stream_events(version="v3")`，并把 raw protocol 转换为业务事件。
 
+它接受一个可选的 `event_sink: StreamEventSink` 参数——一个 `(event_type, data) -> None` 回调——由 FastAPI SSE 层传入。`event_sink` 让解析出的业务事件绕过数据库直接推送到前端 SSE 通道，实现实时更新。
+
 主要处理四类信息：
 
-1. `messages` 文本 delta：累计成 Markdown 正文。
-2. `write_todos` 工具参数块：展示任务清单及状态。
+1. `messages` 文本 delta：累计成 Markdown 正文。通过 `event_sink` 推送 `message_start` + `text_delta`（`mode: "replace"` 表示推送的是累计全文，前端应整体替换，避免重复拼接）。
+2. `write_todos` 工具参数块（三阶段流式解析）：`content-block-start` 获取工具名、`content-block-delta` 获取参数增量、`content-block-finish` 获取完整工具调用。通过 `event_sink` 推送 `todo_delta` 实时更新任务清单。
 3. 工具生命周期：展示正在读取、修改或执行什么。
 4. 子智能体生命周期：展示委派任务摘要。
 

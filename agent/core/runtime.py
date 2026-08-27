@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.backends.local_shell import LocalShellBackend
 from agent.backends.workspace import Workspace
@@ -27,7 +27,7 @@ from agent.core.checkpoint_history import visible_checkpoint_messages
 from agent.core.events import record_event
 from agent.core.graph import get_checkpointer, get_langgraph_store, get_store
 from agent.core.repo_mapping import discover_repo_mapping, save_clone_mapping
-from agent.core.repo_memory import ensure_repo_memory_initialized
+from agent.core.repo_memory import ensure_repo_memory_initialized, repo_project_dir
 from agent.core.repo_memory_update import RepoMemoryUpdate, update_repo_memory_from_text
 from agent.core.settings import PROJECTS_DIR, WORKSPACE_ROOT
 from agent.core.streaming_runtime import run_agent_with_event_stream
@@ -40,6 +40,10 @@ from agent.server import get_agent
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 logger = logging.getLogger("agent.run.runtime")
+
+# event_sink 是 FastAPI SSE 层传进来的回调。
+# runtime 自己不关心 HTTP 细节，只把“有新内容了”通知给上层。
+RuntimeEventSink = Callable[[str, dict[str, Any]], None]
 
 
 # ── Agent 构建与消息归一化 ───────────────────────────────────
@@ -59,39 +63,43 @@ def _build_agent_for_runtime(*, thread_id: str, task_kind: str, repo_url: str | 
     """
 
     configurable: dict[str, Any] = {
+        # thread_id 是 checkpointer 的主键，也是前端当前会话的唯一标识。
         "thread_id": thread_id,
+        # task_kind 会一路传到 agent.server.get_agent，用来选择系统提示词和运行规则。
         "task_kind": task_kind,
+        # 这个标记用于区分“真实执行”和“框架探测图结构”。
         "__is_for_execution__": True,
     }
 
     if repo_url:
+        # 仓库地址在 Agent 工厂中会被用于初始化本地仓库上下文和仓库记忆。
         configurable["repo_url"] = repo_url
 
     # runtime 只组装运行上下文；模型、工具、中间件和后端由 Agent 工厂统一维护。
     return get_agent({"configurable": configurable})
 
 
-def _ensure_repo_memory_for_mapping(repo: Any, mapping: Any) -> None:
-    """根据仓库映射初始化仓库级长期记忆文件。
+def _ensure_repo_memory_for_repo(repo: Any, project_dir: str) -> None:
+    """根据固定项目目录初始化仓库级长期记忆文件。
 
     记忆正文通过 DeepAgents StoreBackend 写入 LangGraph Store，不再额外建立
-    SQLite 索引表，已有记忆不会被覆盖。
+    SQLite 索引表。已有记忆不会被覆盖。
 
-    仓库记忆的初始化只做 “没有则创建” 的动作。后续 coding、planning、review
-    任务完成后的经验总结，由 repo_memory.py 负责结构化写回。
+    仓库记忆的初始化只做“没有则创建”的动作。后续 coding、planning、review
+    任务完成后的经验总结，由 repo_memory_update.py 负责结构化写回。
 
     Args:
         repo: Any: 仓库对象。
         mapping: Any: 仓库映射对象。
     """
 
-    # 初始化仓库级长期记忆
     created = ensure_repo_memory_initialized(
         store=get_langgraph_store(),
         repo=repo,
         # 长期记忆保存虚拟目录，不保存 macOS/Windows 的宿主机绝对路径。
-        project_dir=str(mapping.project_dir).replace("\\", "/"),
+        project_dir=project_dir.replace("\\", "/"),
     )
+
     if created:
         logger.info("已初始化仓库记忆：repo=%s/%s", repo.owner, repo.repo)
 
@@ -731,14 +739,15 @@ def run_pull_only_task(*, repo_url: str, prompt: str, thread_id: str | None = No
     workspace = Workspace(WORKSPACE_ROOT)
     backend = LocalShellBackend(workspace)
 
+    # 计算项目目录
+    project_dir = repo_project_dir(repo)
+    # 确保仓库目录存在
+    _ensure_repo_memory_for_repo(repo, project_dir)
     # 发现仓库映射
     mapping = discover_repo_mapping(repo_url=repo.clone_url, workspace=workspace, store=store)
-    # 确保仓库记忆
-    _ensure_repo_memory_for_mapping(repo, mapping)
     # project_dir 是跨平台虚拟目录；target 才是当前宿主机上的真实路径。
-    relative_dir = Path(mapping.project_dir)
+    relative_dir = Path(project_dir)
     target = workspace.resolve(relative_dir)
-
     clone_url = repo.clone_url
 
     try:
@@ -828,6 +837,7 @@ def run_plan_response_task(
         thread_id: str | None = None,
         previous_plan_message: dict[str, Any] | None = None,
         revision_prompt: str | None = None,
+        event_sink: RuntimeEventSink | None = None,
 ) -> dict[str, Any]:
     """为编码需求生成技术方案，并把方案作为普通回答直接展示。
 
@@ -846,6 +856,7 @@ def run_plan_response_task(
         thread_id : 任务 ID
         previous_plan_message : 上一版方案消息
         revision_prompt : 修订要求
+        event_sink : 事件回调函数
     Returns:
          任务结果
     """
@@ -903,12 +914,13 @@ def run_plan_response_task(
             content=_build_plan_user_content(
                 repo_url=repo.clone_url,
                 # plan_source_prompt 已合并原始需求与本轮修订要求，后续确认实施时也复用它。
-                prompt=plan_source_prompt,
+                prompt=plan_source_prompt(previous_plan_message,
+                                          prompt) if previous_plan_message is not None else prompt,
                 previous_plan=previous_plan_text,
                 revision_prompt=revision_prompt,
             ),
             task_kind="planning",
-            repo_url=repo.clone_url,
+            event_sink=event_sink,
         )
 
         # 结束事件流
@@ -999,6 +1011,8 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
     # 第一层用户意图识别。这里只得到粗粒度 task_kind, 后续还会经过方案确认，
     # 只读权限和 coding 前置方案等 runtime 策略兜底。
     task_kind = classify_task_kind(prompt)
+
+    # 新任务创建新 thread；继续对话时使用前端已有 thread_id，确保 checkpoint 接上历史。
     thread_id = thread_id or str(uuid.uuid4())
     store = get_store()
 
@@ -1064,6 +1078,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
     get_store().clear_run_events(thread_id)
     if approved_plan_text is not None:
         record_event(thread_id, "plan:approved", "用户已确认技术方案", kind="other", status="completed")
+
     logger.info("任务开始：thread_id=%s repo_url=%s", thread_id, repo_url)
     record_event(thread_id, "created", "任务已创建", status="completed")
     record_event(thread_id, "repo", "解析 GitHub 仓库", status="in_progress")
@@ -1082,6 +1097,8 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
         repo_name=repo.repo,
         latest_run_status="running",
     )
+
+    # 每轮 Agent 执行都有独立 run_id。前端事件列表按 run_id 追加，不能复用上一轮 id。
     run_id = str(uuid.uuid4())
     store.record_run(run_id=run_id, thread_id=thread_id, status="running")
     logger.info("业务 Store 已记录运行：thread_id=%s run_id=%s", thread_id, run_id)
@@ -1144,7 +1161,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
             error=mask_token(str(exc)),
             finished=True,
         )
-        logger.error(
+        logger.exception(
             "任务失败：thread_id=%s run_id=%s error=%s",
             thread_id,
             run_id,

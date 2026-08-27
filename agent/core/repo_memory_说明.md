@@ -46,6 +46,7 @@
 `repo_memory.py` 负责：
 
 - 初始 Markdown 模板。
+- 本地项目目录生成（`repo_project_dir()`，固定返回 `projects/<repo>`，不再维护 SQLite 映射表）。
 - namespace、底层 key 和虚拟路径。
 - “不存在才创建”的初始化操作。
 

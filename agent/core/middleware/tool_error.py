@@ -243,6 +243,10 @@ def _record_original_tool_error(
         "fetch_url": ("fetch:{url}", "抓取网页", "fetch"),
         "add_review_finding": ("review:add:{file}", "记录审查发现", "other"),
         "list_review_findings": ("review:list", "列出审查发现", "other"),
+        "get_github_pull_request_context": ("github:pr-context", "读取 PR 审查上下文", "fetch"),
+        "load_default_review_rules": ("review:rules", "读取默认审查规则", "read"),
+        "get_review_diff_summary": ("review:diff:{repo_dir}", "读取审查 diff", "read"),
+        "validate_review_finding_location": ("review:validate:{file}", "校验审查位置", "other"),
     }
     item = mapping.get(tool_name)
     if not item:

@@ -28,7 +28,7 @@ MAX_FACT_CHARS = 350
 SENSITIVE_MARKERS = (".env", ".secrets", "api_key", "apikey", "private key", "私钥")
 
 
-@dataclass
+@dataclass(frozen=True)
 class RepoMemoryUpdate:
     """一次仓库记忆更新所需的稳定事实"""
 
@@ -109,10 +109,8 @@ def _extract_code_items(text: str, *, suffixes: tuple[str, ...], limit: int = 10
         if not clean or _contains_sensitive_text(clean):
             continue
         # 文件名或命令
-        if (
-            any(clean.endswith(suffixes) for suffix in suffixes)
-            or any(suffix in clean for suffix in suffixes)
-        ) and clean not in results:
+        if (any(clean.endswith(suffix) for suffix in suffixes) or any(
+                suffix in clean for suffix in suffixes)) and clean not in results:
             results.append(mask_token(clean))
         if len(results) >= limit:
             break
@@ -133,8 +131,8 @@ def _extract_test_commands(text: str, *, limit: int = 5) -> list[str]:
         if lowered.startswith(("python -m pytest", "pytest")) and not _contains_sensitive_text(clean):
             if clean not in results:
                 results.append(mask_token(clean))
-            if len(results) >= limit:
-                return results
+        if len(results) >= limit:
+            return results
 
     # 提取行内内容
     for raw_line in text.splitlines():
@@ -146,19 +144,21 @@ def _extract_test_commands(text: str, *, limit: int = 5) -> list[str]:
             clean = mask_token(line)
             if clean not in results:
                 results.append(clean)
-            if len(results) >= limit:
-                break
+        if len(results) >= limit:
+            break
 
     # 提取行内内容
     if len(results) < limit:
         # 提取行内内容
         # 命令以 python -m pytest 或 pytest 开头
         for match in re.findall(
-            r"(?:python\s+-m\s+pytest|pytest)(?:\s+[A-Za-z0-9_./\\:-]+)?",
-            text,
-            flags=re.IGNORECASE,
+                r"(?:python\s+-m\s+pytest|pytest)(?:\s+[A-Za-z0-9_./\\:-]+)?",
+                text,
+                flags=re.I,
         ):
             clean = " ".join(match.strip().split())
+
+            #  判断文本是否包含不应写入长期记忆的敏感标记
             if clean and clean not in results and not _contains_sensitive_text(clean):
                 results.append(mask_token(clean))
             if len(results) >= limit:
@@ -171,9 +171,11 @@ def _extract_file_names(text: str, *, limit: int = 10) -> list[str]:
 
     results: list[str] = []
     for match in re.findall(
-        r"[\w.-]+\.(?:py|md|txt|html|json|toml)", text, flags=re.IGNORECASE
+            r"[\w.-]+\.(?:py|md|txt|html|json|toml)", text, flags=re.I
     ):
         clean = match.strip()
+
+        #  判断文本是否包含不应写入长期记忆的敏感标记
         if clean and clean not in results and not _contains_sensitive_text(clean):
             results.append(mask_token(clean))
         if len(results) >= limit:
@@ -208,7 +210,7 @@ def _replace_section(memory: str, heading: str, items: list[str]) -> str:
     # 构建正则表达式模式
     pattern = re.compile(
         rf"(^## {re.escape(heading.removeprefix('## '))}\n)(.*?)(?=^## |\Z)",
-        re.MULTILINE | re.DOTALL,
+        re.M | re.S,
     )
     # 替换内容
     if pattern.search(memory):
@@ -254,6 +256,7 @@ def _append_recent(memory: str, *, task_kind: str, fact: str) -> str:
     recent_items = [entry, *lines][:MAX_RECENT_ITEMS]
     # 构建列表项
     return f"{before.rstrip()}\n\n{heading}\n" + "\n".join(recent_items) + "\n"
+
 
 def _metadata_items(*, branch_name: str | None, pr_url: str | None) -> list[str]:
     """整理分支和 PR 这类线程元数据。"""
@@ -316,6 +319,8 @@ def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
     # 替换或追加内容
     if key_files:
         updated = _replace_section(updated, "## 关键文件", key_files)
+
+    # 构建元数据
     metadata = _metadata_items(branch_name=update.branch_name, pr_url=update.pr_url)
     # 替换或追加内容
     if metadata:
@@ -329,10 +334,10 @@ def build_updated_repo_memory(memory: str, update: RepoMemoryUpdate) -> str:
 
 
 def update_repo_memory_from_text(
-    *,
-    store: BaseStore,
-    repo: GitHubRepo,
-    update: RepoMemoryUpdate,
+        *,
+        store: BaseStore,
+        repo: GitHubRepo,
+        update: RepoMemoryUpdate,
 ) -> bool:
     """把任务最终输出写回仓库级长期记忆。
 
@@ -346,6 +351,7 @@ def update_repo_memory_from_text(
         return False
 
     current = str(item.value.get("content") or "")
+    # 构建更新后的内容
     updated = build_updated_repo_memory(current, update)
     if updated == current:
         logger.info("仓库记忆无新增稳定结论：repo=%s/%s task_kind=%s", repo.owner, repo.repo, update.task_kind)

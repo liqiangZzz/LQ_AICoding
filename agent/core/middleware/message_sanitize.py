@@ -338,8 +338,6 @@ class MessageSanitizeMiddleware(AgentMiddleware):
     靠前位置，确保每次请求都先经过兼容清洗。
     """
 
-    state_schema = AgentState
-
     def _clean_request(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
         """生成清洗后的 ModelRequest。
 

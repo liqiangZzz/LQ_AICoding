@@ -29,7 +29,7 @@ LOG_DIR = Path(get_env("LQ_AICODING_LOG_DIR", str(PROJECT_ROOT / "logs"))).expan
 LOG_LEVEL = get_env("LQ_AICODING_LOG_LEVEL", "INFO").upper()
 LOG_ROTATION_WHEN = get_env("LQ_AICODING_LOG_WHEN", "midnight")
 LOG_ROTATION_INTERVAL = int(get_env("LQ_AICODING_LOG_INTERVAL", "1"))
-LOG_RETENTION_DAYS = int(get_env("LQ_AICODING_LOG_RETENTION_DAYS", "30"))
+LOG_RETENTION_DAYS = int(get_env("LQ_AICODING_LOG_RETENTION_DAYS", "14"))
 
 
 def log_date_text(target_date: date | None = None) -> str:

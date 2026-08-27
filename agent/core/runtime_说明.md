@@ -24,7 +24,7 @@ runtime 不直接实现模型推理，也不直接组装模型、工具、中间
 | `run_agent_task()` | `api/routes.py:create_task()` | 收到 `POST /api/tasks` 后 | 分类任务并选择下面某一条分支 |
 | `run_workspace_listing_task()` | `run_agent_task()` | 用户只要求查看本地项目 | 直接读工作区，不调用模型 |
 | `run_pull_only_task()` | `run_agent_task()` | 用户只要求 clone/fetch/pull | 准备仓库并更新映射，不进入 coding |
-| `run_plan_response_task()` | `run_agent_task()` | 首次 coding 请求或用户要求修改方案 | 构建 planning Agent，输出待确认方案 |
+| `run_plan_response_task()` | `run_agent_task()` | 首次 coding 请求或用户要求修改方案（可选传递 `event_sink`） | 构建 planning Agent，输出待确认方案 |
 | `_build_agent_for_runtime()` | 方案或通用 Agent 分支 | 即将调用模型时 | 调用 `server.get_agent()` 完成装配 |
 | `get_task()` / `list_tasks()` | 查询 API | Dashboard 查询任务时 | 聚合业务 Store 中的展示数据 |
 | `delete_task()` | 删除入口 | 用户删除任务时 | 同时清理业务数据和 checkpoint |
@@ -215,9 +215,13 @@ runtime 负责允许并要求这些行为，但不能保证每一步一定成功
 ```text
 创建或更新 thread/run
   ↓
-解析仓库并查找本地映射
+解析 GitHub 仓库
   ↓
-初始化仓库长期记忆（不覆盖已有内容）
+计算项目目录（repo_project_dir）
+  ↓
+初始化仓库长期记忆（不覆盖已有内容，使用 repo_project_dir 而非 mapping.project_dir）
+  ↓
+发现仓库映射（discover_repo_mapping）
   ↓
 检查本地目标目录
   ├─ 已有 Git 仓库：remote set-url → fetch --all → pull --ff-only
