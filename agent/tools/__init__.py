@@ -17,10 +17,11 @@ from __future__ import annotations
 from .fetch_url_tools import fetch_url
 
 # GitHub 工具：用于把已经推送的分支转换为 PR，并支持向 PR 写评论。
-from .github_tools import open_github_pull_request, publish_github_pr_comment
+from .github_tools import open_github_pull_request, publish_github_pr_comment, get_github_pull_request_context
 
 # Review 工具：用于结构化保存和读取代码审查发现。
-from .reviewer_tools import add_review_finding, list_review_findings
+from .reviewer_tools import add_review_finding, list_review_findings, get_review_diff_summary, \
+    load_default_review_rules, validate_review_finding_location
 
 # 联网搜索工具：用于在本地上下文不足时补充外部公开资料。
 from .web_search import web_search
@@ -29,8 +30,12 @@ from .web_search import web_search
 __all__ = [
     "add_review_finding",
     "fetch_url",
+    "get_github_pull_request_context",
+    "get_review_diff_summary",
     "list_review_findings",
+    "load_default_review_rules",
     "open_github_pull_request",
     "publish_github_pr_comment",
+    "validate_review_finding_location",
     "web_search",
 ]

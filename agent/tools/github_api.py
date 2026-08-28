@@ -2,6 +2,7 @@
 
 本模块负责读取访问令牌、创建 Pull Request、发布 PR 评论，以及在重复创建时
 查找并复用已有 PR。上层 LangChain/DeepAgents 工具定义在 `github_tools.py` 中。
+这样的分层可以让 API 调用逻辑脱离模型工具协议，便于单元测试、复用和错误处理。
 """
 import re
 from dataclasses import dataclass
@@ -15,7 +16,12 @@ from agent.env_utils import get_env
 
 @dataclass(frozen=True)
 class GitHubRepo:
-    """标准化后的 GitHub 仓库信息。"""
+    """标准化后的 GitHub 仓库信息。
+
+    owner 和 repo 用于调用 GitHub API；
+    clone_url 用于 Git clone/push 等本地命令。
+    使用 frozen dataclass 可以避免解析后的仓库信息在调用链中被意外修改。
+    """
     owner: str
     repo: str
     clone_url: str

@@ -66,7 +66,9 @@ class DiffSummary:
     def changed_lines_for(self, path: str) -> tuple[int, ...]:
         """返回指定文件在新文件侧的新增或修改行号。"""
 
+        # 先把外部传入路径规整成 diff 内部使用的格式，避免 a/main.py、b/main.py、main.py 比较失败。
         normalized = _normalize_diff_path(path)
+        # 在结构化文件列表中查找目标文件。
         match = next((file for file in self.files if file.path == normalized), None)
         return match.changed_lines if match is not None else ()
 
@@ -180,7 +182,7 @@ def parse_unified_diff(diff_text: str, *, base: str = "HEAD", head: str | None =
             # 删除行只存在于旧文件，不增加新文件行号。
             # 第一版 reviewer finding 只定位到新文件侧行号，所以这里不记录删除行。
             continue
-        elif not raw_line.startswith("\\ No newline at end of file"):
+        else:
             # context 行或空行都对应新文件行号，需要递增。
             # 例如普通上下文行虽然不是变更行，但它会推动后续新增行的行号。
             new_line += 1

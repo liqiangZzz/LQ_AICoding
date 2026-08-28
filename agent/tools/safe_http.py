@@ -161,6 +161,7 @@ def _pin_dns(hostname: str, addr_infos: list) -> Iterator[None]:
     finally:
         # 弹出当前 pin。
         stack.pop()
+        # 最后一个上下文退出时恢复原始逻辑。
         with _install_lock:
             _install_count -= 1
             if _install_count == 0 and _original_create_connection is not None:

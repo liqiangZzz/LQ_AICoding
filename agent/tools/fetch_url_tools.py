@@ -120,7 +120,7 @@ def _html_to_markdown(content: str) -> str:
         from markdownify import markdownify  # type: ignore
 
         return str(markdownify(content)).strip()
-    except Exception:  # noqa: BLE001 - 可选解析器失败时必须回退标准库
+    except Exception:  # 可选解析器失败时必须回退标准库
         # 任何导入或转换异常都降级到标准库解析，保证工具可用性。
         parser = _TextExtractor()
         parser.feed(content)

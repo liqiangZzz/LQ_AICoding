@@ -24,7 +24,7 @@ def open_github_pull_request(
         owner: str,
         repo: str,
         head: str,
-        base: str = "main",
+        base: str = "master",
         title: str = "LQ-AICODING generated changes",
         body: str = "由 LQ-AICODING 自动生成。",
 ) -> dict[str, Any]:
@@ -34,7 +34,7 @@ def open_github_pull_request(
         owner: GitHub 仓库所有者。
         repo: GitHub 仓库名。
         head: 源分支。
-        base: 目标分支，默认为 main。
+        base: 目标分支，默认为 master。
         title: Pull Request 标题。
         body: Pull Request 描述。
 
