@@ -292,12 +292,10 @@ class LocalSqliteStore:
         status: str,
         *,
         pr_url: str | None = None,
-        branch_name: str | None = None,
-        branch: str | None = None,
+        branch_name: str | None = None
     ) -> None:
         """更新会话/任务状态，并兼容旧调用方使用的 ``branch`` 参数。"""
         with self._lock:
-            resolved_branch = branch_name or branch
             existing = self.get_thread(thread_id)
             # 运行事件可能比任务初始化更早到达。这里补建最小 thread 记录，
             # 避免状态更新静默丢失，后续 upsert 会再补齐仓库和标题信息。
@@ -306,7 +304,7 @@ class LocalSqliteStore:
                     thread_id=thread_id,
                     title=thread_id,
                     pr_url=pr_url,
-                    branch_name=resolved_branch,
+                    branch_name=branch_name,
                     latest_run_status=status,
                 )
                 return
@@ -317,7 +315,7 @@ class LocalSqliteStore:
                     branch_name = COALESCE(?, branch_name), updated_at = ?
                 WHERE thread_id = ?
                 """,
-                (status, pr_url, resolved_branch, utc_now(), thread_id),
+                (status, pr_url, branch_name, utc_now(), thread_id),
             )
             self._conn.commit()
 
@@ -353,7 +351,6 @@ class LocalSqliteStore:
         *,
         event_id: str,
         thread_id: str,
-        key: str | None = None,
         kind: str,
         title: str,
         status: str,
@@ -658,24 +655,31 @@ class LocalSqliteStore:
             existing = self.get_thread(thread_id)
             if existing is None:
                 return False
+
+            # 删除会话关联的审查发现项
             self._conn.execute(
                 "DELETE FROM review_findings WHERE thread_id = ?", (thread_id,)
-            )  #  删除会话的检查发现
+            )
+            # 删除会话关联的技术方案/计划
             self._conn.execute(
                 "DELETE FROM thread_plans WHERE thread_id = ?", (thread_id,)
-            )  #  删除会话的技术方案
+            )
+            # 删除会话关联的消息记录
             self._conn.execute(
                 "DELETE FROM thread_messages WHERE thread_id = ?", (thread_id,)
             )
+            # 删除会话关联的运行事件日志
             self._conn.execute(
                 "DELETE FROM run_events WHERE thread_id = ?", (thread_id,)
-            )  #  删除会话的运行事件
+            )
+            # 删除会话关联的运行记录
             self._conn.execute(
                 "DELETE FROM runs WHERE thread_id = ?", (thread_id,)
-            )  #  删除会话的运行记录
+            )
+            # 删除会话主记录（最后删除，防止外键约束冲突）
             self._conn.execute(
                 "DELETE FROM threads WHERE thread_id = ?", (thread_id,)
-            )  #  删除会话记录
+            )
             self._conn.commit()
             return True
 
@@ -807,21 +811,25 @@ class LocalSqliteStore:
             notes: 备注
             is_active: 是否活动
             verified: 是否验证
+
+        Returns:
+            映射记录  dict[str, Any]
         """
 
         with self._lock:
             now = utc_now()
-            self._conn.execute(
-                """
-                UPDATE repo_workspace_mappings
-                SET is_active = 0,
-                    updated_at = ?
-                WHERE repo_url = ?
-                  AND id != ?
-                  AND is_active = 1
-                """,
-                (utc_now(), repo_url, mapping_id),
-            )
+            if is_active:
+                self._conn.execute(
+                    """
+                    UPDATE repo_workspace_mappings
+                    SET is_active = 0,
+                        updated_at = ?
+                    WHERE repo_url = ?
+                      AND id != ?
+                      AND is_active = 1
+                    """,
+                    (utc_now(), repo_url, mapping_id),
+                )
             self._conn.execute(
                 """
                  INSERT INTO repo_workspace_mappings (
