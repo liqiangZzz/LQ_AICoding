@@ -18,13 +18,13 @@ Agent 不应依赖上面的宿主机绝对路径。工具调用统一使用 `/pr
 ## 目录语义
 
 - `/projects/`：GitHub 仓库克隆目录，真实业务项目通常位于 `/projects/仓库名`。
-- `/skills/`：DeepAgents 原生 skill 目录。
+- `/skills/`：DeepAgents 原生 skill 目录，Agent 运行时通过 `/skills` 虚拟路径读取。
 - `/runtimes/`：共享运行环境目录，例如 Python 虚拟环境、Node 或其他项目运行时。
 - `/policies/`：编码规范、审查规范和安全规范目录。
 - `/reviews/`：代码审查、分析结果和历史评审资料目录。
 - `/logs/`：工作区级运行日志目录，用于排查 Agent 或项目运行过程。
 - `/tmp/`：临时文件目录，用于短期中间产物。
-- `secrets/`：Git AskPass 等敏感辅助文件目录，不对 Agent 开放。
+- `.secrets/`：Git AskPass 等敏感辅助文件目录，不对 Agent 开放。。
 - `.ai_coding_workspace.json`：工作区元信息文件，用于识别本地工作区状态。
 
 ## 路径使用原则
