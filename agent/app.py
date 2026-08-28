@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
+from agent.api.dashboard_routes import dashboard_router
 from agent.api.routes import router
 from agent.core.logging_config import configure_logging
-from agent.env_utils import get_env, load_environment
+from agent.env_utils import load_environment
 
 # ---------------------------------------------------------------
 # 启动前置初始化
@@ -17,7 +18,11 @@ from agent.env_utils import get_env, load_environment
 load_environment()
 configure_logging()
 
-app = FastAPI(title='我的AI Coding项目', version='0.1.1')
+app = FastAPI(
+    title="LQ-AICODING Course Backend",  # 应用名称
+    version="0.1.0",                     # 应用版本号
+)
+
 
 # ---------------------------------------------------------------
 # 配置 CORS 中间件
@@ -27,22 +32,25 @@ app = FastAPI(title='我的AI Coding项目', version='0.1.1')
 #   - 127.0.0.1:5173 / localhost:5173  （常见 Vite 开发端口）
 # 生产环境中应替换为实际的前端域名。
 # ---------------------------------------------------------------
-_default_origins = (
-    "http://127.0.0.1:3000,http://localhost:3000,"
-    "http://127.0.0.1:5173,http://localhost:5173"
-)
-_allowed_origins = [
-    origin.strip()
-    for origin in get_env("DASHBOARD_ALLOWED_ORIGINS", _default_origins).split(",")
-    if origin.strip()
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins or _default_origins.split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,   # 允许携带凭证（如 Cookie）
+    allow_methods=["*"],       # 允许所有 HTTP 方法
+    allow_headers=["*"],       # 允许所有请求头
 )
 
+# ---------------------------------------------------------------
+# 注册路由
+# ---------------------------------------------------------------
+# router          - 主要 API 路由（核心业务逻辑）  http://ip:port/dashboard/api/v1/...
+# dashboard_router - 仪表盘相关 API 路由（管理/监控用途）
+# ---------------------------------------------------------------
 app.include_router(router)
+app.include_router(dashboard_router)
+

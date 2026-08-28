@@ -153,15 +153,11 @@ def get_system_prompt(task_kind: TaskKind = "coding") -> str:
     """根据任务类型生成系统提示词。"""
 
     workspace_memory = load_workspace_memory()
-    workspace_context = (
-        f"\n\n本地工作区固定约定：\n{workspace_memory}"
-        if workspace_memory
-        else ""
-    )
+    memory_section = f"\n\n长期记忆：\n{workspace_memory}" if workspace_memory else ""
+
     if task_kind == "coding":
-        return f"{BASE_SYSTEM_PROMPT}\n\n{CODING_PROMPT}{workspace_context}"
-    task_prompt = READ_ONLY_PROMPTS.get(task_kind, READ_ONLY_PROMPTS["qa"])
-    return f"{BASE_SYSTEM_PROMPT}\n\n{task_prompt}{workspace_context}"
+        return f"{BASE_SYSTEM_PROMPT}{memory_section}\n\n{CODING_PROMPT}"
+    return f"{BASE_SYSTEM_PROMPT}{memory_section}\n\n{READ_ONLY_PROMPTS.get(task_kind, READ_ONLY_PROMPTS['qa'])}"
 
 
 SYSTEM_PROMPT = get_system_prompt("coding")
