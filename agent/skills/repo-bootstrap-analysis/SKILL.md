@@ -39,18 +39,19 @@ GitHub Token 由 `LocalShellBackend` 通过 Git askpass 自动注入。不要把
 
 优先读取这些文件或目录，按实际存在情况选择，不要假设它们一定存在：
 
-| 目标 | 常见文件或目录 | 需要判断的内容 |
-|---|---|---|
-| 项目说明 | `README.md`、`docs/` | 项目用途、启动方式、部署方式 |
-| Python 依赖 | `pyproject.toml`、`requirements.txt`、`setup.py` | Python 版本、依赖、测试命令 |
-| Node 依赖 | `package.json`、`pnpm-lock.yaml`、`yarn.lock` | 前端框架、脚本命令、构建方式 |
-| 后端入口 | `main.py`、`app.py`、`src/`、`server/` | Web 框架、路由入口、服务启动方式 |
-| 前端入口 | `vite.config.*`、`src/`、`pages/`、`components/` | Vite/React/Vue 等框架和页面结构 |
-| 测试目录 | `tests/`、`test/`、`pytest.ini` | 测试框架、可运行的最小测试 |
-| 数据层 | `models/`、`db.py`、`database.py`、`migrations/` | 数据存储方式、迁移风险 |
-| 配置 | `.env.example`、`config/`、`settings.py` | 环境变量、敏感配置边界 |
+| 目标        | 常见文件或目录                                        | 需要判断的内容                 |
+|-----------|------------------------------------------------|-------------------------|
+| 项目说明      | `README.md`、`docs/`                            | 项目用途、启动方式、部署方式          |
+| Python 依赖 | `pyproject.toml`、`requirements.txt`、`setup.py` | Python 版本、依赖、测试命令       |
+| Node 依赖   | `package.json`、`pnpm-lock.yaml`、`yarn.lock`    | 前端框架、脚本命令、构建方式          |
+| 后端入口      | `main.py`、`app.py`、`src/`、`server/`            | Web 框架、路由入口、服务启动方式      |
+| 前端入口      | `vite.config.*`、`src/`、`pages/`、`components/`  | Vite/React/Vue 等框架和页面结构 |
+| 测试目录      | `tests/`、`test/`、`pytest.ini`                  | 测试框架、可运行的最小测试           |
+| 数据层       | `models/`、`db.py`、`database.py`、`migrations/`  | 数据存储方式、迁移风险             |
+| 配置        | `.env.example`、`config/`、`settings.py`         | 环境变量、敏感配置边界             |
 
-读取目录前先用 `ls`，读取文件时只对具体文件使用 `read_file`。路径必须使用 DeepAgents 虚拟路径，例如 `/projects/ai_coding/README.md`。
+读取目录前先用 `ls`，读取文件时只对具体文件使用 `read_file`。路径必须使用 DeepAgents 虚拟路径，例如
+`/projects/ai_coding/README.md`。
 
 ## 3. 分析输出必须覆盖的内容
 
@@ -75,6 +76,25 @@ GitHub Token 由 `LocalShellBackend` 通过 Git askpass 自动注入。不要把
 3. 明确推荐方案和理由。
 4. 列出预计修改文件、验证命令和风险点。
 5. 最后询问用户：`是否确认实施该方案？`
+
+技术方案的目标是让用户确认“实施方向”，不是提前生成完整代码。输出时必须遵守：
+
+1. 推荐使用这些章节组织内容：
+   - 需求理解；
+   - 当前实现判断；
+   - 推荐方案；
+   - 预计修改文件；
+   - 数据结构或接口变化表；
+   - 实施步骤；
+   - 验证方式；
+   - 风险点；
+   - `是否确认实施该方案？`
+2. 不要输出完整类定义、完整函数、完整测试用例、完整 HTML 模板或完整 SQL 脚本。
+3. 不要写“在某文件末尾追加以下代码”然后贴一大段代码。
+4. 可以用表格说明字段、接口和文件变化，例如列出字段名、类型、约束、说明。
+5. 可以用 3 到 8 行伪代码描述核心流程，但不要把伪代码写成可直接复制运行的完整实现。
+6. 除非用户明确要求“给出代码示例”或“把代码写出来”，否则 Markdown 代码块总长度不要超过 10 行。
+7. 如果需要说明代码结构，用自然语言描述修改点，例如“新增 Department 模型，字段包括 id/name/description/created_at”，不要贴完整实现。
 
 在用户确认前，禁止修改文件、提交代码、push 分支或创建 Pull Request。
 
