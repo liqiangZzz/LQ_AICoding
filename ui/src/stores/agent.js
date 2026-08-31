@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { dashboardApi } from '../api/client'
 import { streamAgentMessage } from '../api/sse'
 
-const DEFAULT_REPO = 'https://gitee.com/msb-goldbin/ai_coding'
+const DEFAULT_REPO = 'https://github.com/liqiangZzz/ai_coding'
 
 function nowIso() {
   return new Date().toISOString()
