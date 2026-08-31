@@ -44,7 +44,7 @@ onMounted(() => {
     <section class="workspace">
       <header class="workspace-header">
         <div>
-          <h1>LX-AICODING</h1>
+          <h1>LQ-AICODING</h1>
           <p>
             <span class="dot" :class="{ running: agent.streaming }"></span>
             {{ agent.streaming ? 'Agent 正在运行' : 'FastAPI + DeepAgents' }}
@@ -61,7 +61,7 @@ onMounted(() => {
         <div v-if="agent.loading" class="empty-state">正在加载会话...</div>
         <div v-else-if="!agent.messages.length" class="empty-state">
           <img src="/ai_logo.svg" alt="码士集团" />
-          <h2>让 LX-AICODING 构建、修复或检查一个 Gitee 仓库</h2>
+          <h2>让 LQ-AICODING 构建、修复或检查一个 GitHub 仓库</h2>
           <p>输入技术方案、代码实施、PR 审查等指令，前端会按顺序展示用户输入、任务计划和 AI 输出。</p>
         </div>
 
