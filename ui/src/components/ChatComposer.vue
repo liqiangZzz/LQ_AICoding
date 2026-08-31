@@ -41,11 +41,11 @@ function onKeydown(event) {
 <template>
   <footer class="composer">
     <label class="repo-field">
-      <span>Gitee 仓库</span>
+      <span>GitHub 仓库</span>
       <input
         :value="repo"
         :disabled="disabled"
-        placeholder="https://gitee.com/owner/repo"
+        placeholder="https://github.com/owner/repo"
         @input="$emit('update:repo', $event.target.value)"
       />
     </label>

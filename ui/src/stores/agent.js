@@ -5,6 +5,20 @@ import { streamAgentMessage } from '../api/sse'
 
 const DEFAULT_REPO = 'https://github.com/liqiangZzz/ai_coding'
 
+/**
+ * 把仓库字符串规范成完整 URL。
+ * - 已带协议头（http/https）的直接返回；
+ - 简写形式 owner/repo 自动补 GitHub 前缀；
+ - 空值返回 null（让调用方走 DEFAULT_REPO 兜底）。
+ */
+function normalizeRepoUrl(value) {
+  if (!value) return null
+  const trimmed = String(value).trim()
+  if (!trimmed) return null
+  if (/^https?:\/\//.test(trimmed)) return trimmed
+  return `https://github.com/${trimmed}`
+}
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -149,7 +163,7 @@ export const useAgentStore = defineStore('agent', {
       this.error = ''
       const thread = await dashboardApi.getThread(threadId)
       this.currentThread = thread
-      this.selectedRepo = thread.repo || thread.repoFullName || DEFAULT_REPO
+      this.selectedRepo = normalizeRepoUrl(thread.repo || thread.repoFullName) || DEFAULT_REPO
       this.messages = normalizeThreadMessages(thread.messages)
     },
     async createThread() {
