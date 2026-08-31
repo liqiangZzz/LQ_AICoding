@@ -30,15 +30,17 @@ def _delta_messages_from_checkpoint(thread_id: str) -> list[Any]:
     checkpointer = get_checkpointer()
     config = {"configurable": {"thread_id": thread_id}}
     try:
-        # 读取 messages 通道历史
-        history = checkpointer.get_delta_channel_history(config, channels=["messages"])
+        # 读取 messages 通道历史（langgraph 新版本为 keyword-only 参数）
+        history = checkpointer.get_delta_channel_history(config=config, channels=["messages"])
     except Exception:
         logger.exception("读取 checkpoint messages 通道失败：thread_id=%s", thread_id)
         return []
 
     # 解析 messages 通道历史
+    # get_delta_channel_history 返回形如 {"messages": {"seed": ..., "writes": [...]}}
+    # 的 dict 结构；直接是 list 的旧格式已经不存在。
     channel_history = history.get("messages") if isinstance(history, dict) else None
-    if not isinstance(channel_history, list):
+    if not isinstance(channel_history, dict):
         return []
 
     messages: list[Any] = []

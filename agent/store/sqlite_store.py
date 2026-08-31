@@ -292,9 +292,16 @@ class LocalSqliteStore:
         status: str,
         *,
         pr_url: str | None = None,
-        branch_name: str | None = None
+        branch_name: str | None = None,
+        **kwargs: Any,
     ) -> None:
-        """更新会话/任务状态，并兼容旧调用方使用的 ``branch`` 参数。"""
+        """更新会话/任务状态，并兼容旧调用方使用的 ``branch`` 参数。
+
+        branch 等旧参数名在 kwargs 里兜底映射到 branch_name，避免历史工具调用
+        因参数名不匹配直接抛 TypeError 中断 PR 创建流程。
+        """
+        if kwargs.get("branch") is not None and branch_name is None:
+            branch_name = kwargs["branch"]
         with self._lock:
             existing = self.get_thread(thread_id)
             # 运行事件可能比任务初始化更早到达。这里补建最小 thread 记录，

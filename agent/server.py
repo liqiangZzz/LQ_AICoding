@@ -13,6 +13,8 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
+
+from agent.core.middleware.fs_policy import compile_fs_policy, main_agent_permissions
 from langgraph.store.base import BaseStore
 
 from agent.backends.local_shell import LocalShellBackend
@@ -198,15 +200,17 @@ def _code_reviewer_subagent(model: BaseChatModel) -> SubAgent:
         ],
     }
 
-
 def _agent_filesystem_permissions(task_kind: TaskKind) -> list[FilesystemPermission]:
     """主 Agent 的文件系统权限。
 
     只有 coding 主 Agent 可以修改 `/projects`；所有任务都只能把临时产物写入
     `/reviews` 和 `/tmp`。`/memories` 始终只读，由 runtime 在任务成功后统一写回。
     最终本地边界仍由 LocalShellBackend 做 macOS/Windows 路径校验与写入保护。
-    """
 
+    注意：这份声明在 deepagents 0.6.x 下由 FilesystemMiddleware 在文件工具
+    （read_file/write_file/edit_file/ls/glob/grep）执行前真实判定（_check_fs_permission）；
+    execute 命令工具没有工具级权限，由 LocalShellBackend 命令守卫兜底。
+    """
     return [
         FilesystemPermission(
             operations=["read"],
@@ -249,6 +253,7 @@ def _agent_filesystem_permissions(task_kind: TaskKind) -> list[FilesystemPermiss
             mode="deny",
         ),
     ]
+
 
 def _task_kind_from_config(configurable: dict[str, Any]) -> TaskKind:
     """从 config 中读取任务类型，非法值统一回退为 coding。"""
@@ -401,9 +406,11 @@ def get_agent(config: RunnableConfig):
         configurable["_repo_memory_content"] = repo_memory_content
 
     def backend_factory(_runtime: object, _thread_id: str = thread_id) -> Any:
-        # DeepAgents 0.6.x 直接传入带命令执行能力的 backend 时，和 permissions
-        # 组合仍有兼容限制；因此这里保留 factory 形式，同时返回已经准备好的
-        # thread 级 backend。Agent 实例可以按请求重建，backend 和工作区继续复用。
+        # DeepAgents 0.6.x 的 FilesystemMiddleware 只允许在 backend 不是
+        # BackendProtocol 实例时声明 permissions（传实例会触发 NotImplementedError）。
+        # 这里保留 factory 形式，让声明式 permissions 真正走 deepagents 的
+        # _check_fs_permission 判断（read/write/edit/ls/glob/grep 文件工具生效）；
+        # backend 和工作区仍然按 thread 复用。
         return agent_backend
 
     # PR 创建和评论属于远端写操作，只向 coding Agent 注册。
@@ -420,10 +427,15 @@ def get_agent(config: RunnableConfig):
     main_model = make_main_model()
 
     # 顺序代表调用链：先清洗模型历史和注入上下文，再校验工具输入并兜底工具异常。
+    # 注意：文件工具权限有两层——deepagents 声明式 permissions（见下方
+    # create_deep_agent 的 permissions 参数，0.6.x 下真实走 _check_fs_permission）
+    # 和本中间件的自研策略（compile_fs_policy，覆盖 delete/upload 等库不覆盖的工具）。
+    # 两层判定语义一致（allow 优先于 deny），同时通过才执行，双保险不冲突。
+    fs_policy = compile_fs_policy(main_agent_permissions(task_kind))
     middleware = [
         MessageSanitizeMiddleware(),  # 清洗模型历史和用户输入中的无效内容
         ContextInjectionMiddleware(),  # 注入仓库记忆内容
-        SanitizeToolInputsMiddleware(backend=backend),  # 校验工具输入
+        SanitizeToolInputsMiddleware(backend=backend, policy=fs_policy),  # 校验工具输入 + 自研权限兜底
         create_summarization_tool_middleware(main_model, agent_backend),
         ModelCallLimitMiddleware(run_limit=MODEL_CALL_RECURSION_LIMIT, exit_behavior="end"),
         ToolErrorMiddleware(backend=backend),  # 统一工具异常处理
@@ -438,8 +450,16 @@ def get_agent(config: RunnableConfig):
         system_prompt=get_system_prompt(task_kind),  # 使用任务类型对应的系统提示词
         subagents=[_general_purpose_subagent(main_model), _code_reviewer_subagent(main_model)], # 注册子 Agent
         middleware=middleware,  # 使用中间件
-        backend=backend_factory,  # 使用仓库后端
-        permissions=_agent_filesystem_permissions(task_kind),  # 主 Agent 的文件权限
+        backend=backend_factory,  # 0.6.x factory 形式，让声明式 permissions 走 deepagents 判断
+        permissions=_agent_filesystem_permissions(task_kind),  # 主 Agent 声明式文件权限
+        # 文件隔离由 LocalShellBackend 自研层承担：虚拟路径映射、工作区越界拦截、
+        # 命令白名单、危险命令守卫、目录只读保护（skills/policies/runtimes/logs/secrets）。
+        # 说明（deepagents 0.6.11 + backend_factory 组合）：
+        # - permissions 由 FilesystemMiddleware 在 read/write/edit/ls/glob/grep 前真实判定；
+        # - execute 命令工具没有工具级权限（0.6/0.7 均未实现），由 LocalShellBackend 守卫；
+        # - SanitizeToolInputsMiddleware 的自研策略（compile_fs_policy）作为第二层，
+        #   覆盖 delete/upload 等库不覆盖的写工具，语义与声明一致，双保险。
+        # 子 Agent 的"只读/不修改源码"约束由声明 permissions + system_prompt + read_only 共同保证。
         skills=["/skills/"],  # 从工作区加载内置和用户扩展的 skills
         # 使用仓库记忆
         # memory 只声明 Agent 可以访问的长期记忆文件路径；

@@ -428,6 +428,20 @@ def _is_confirmable_plan_text(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
+    plan_markers = [
+        "是否确认实施该方案",
+        "技术方案",
+        "修复技术方案",
+        "实施步骤",
+        "修复依据",
+        "验证方案",
+    ]
+    # 方案特征词优先放行：模型在分析安全架构时，正文里可能引用“当前任务是只读模式”、
+    # “无法执行代码修改”等系统设计描述。这些是方案分析内容，不是模型拒绝执行，
+    # 不能因为出现拒绝类词组就把完整方案误判为“不可确认”，否则用户点“确认实施”
+    # 会永远被弹回 planning 重新生成方案。
+    if any(marker in stripped for marker in plan_markers):
+        return True
     rejection_markers = [
         "当前任务是**只读模式**",
         "当前任务是只读模式",
@@ -437,15 +451,7 @@ def _is_confirmable_plan_text(text: str) -> bool:
     ]
     if any(marker in stripped for marker in rejection_markers):
         return False
-    plan_markers = [
-        "是否确认实施该方案",
-        "技术方案",
-        "修复技术方案",
-        "实施步骤",
-        "修复依据",
-        "验证方案",
-    ]
-    return any(marker in stripped for marker in plan_markers)
+    return False
 
 
 def _latest_confirmable_plan_from_checkpoint(thread_id: str) -> dict[str, Any] | None:
@@ -978,7 +984,13 @@ def run_plan_response_task(
         raise
 
 
-def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) -> dict[str, Any]:
+def run_agent_task(
+        *,
+        repo_url: str,
+        prompt: str,
+        thread_id: str | None = None,
+        event_sink: RuntimeEventSink | None = None,
+) -> dict[str, Any]:
     """运行一次普通 Agent 任务的总入口。
 
     这是 runtime.py 最重要的函数。FastAPI 后台任务最终会调用它完成一次用户输入。
@@ -1057,6 +1069,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
                 thread_id=thread_id,
                 previous_plan_message=plan_message,
                 revision_prompt=prompt,
+                event_sink=event_sink,
             )
 
     if existing_thread and approved_plan_text is None and _is_approval_prompt(prompt):
@@ -1071,7 +1084,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
         # 只要是 coding 请求，且没有找到用户确认过的方案，就先转入 planning。
         # 这个判断在 runtime 层完成，而不是只写在 Prompt 里，目的是把“先方案、再实施”
         # 做成确定性的产品流程，降低 Agent 首轮直接误改代码的风险。
-        return run_plan_response_task(repo_url=repo_url, prompt=prompt, thread_id=thread_id)
+        return run_plan_response_task(repo_url=repo_url, prompt=prompt, thread_id=thread_id, event_sink=event_sink)
 
     # 到这里说明本轮不是直达任务，也不是“未确认的 coding 需求”。
     # 接下来进入通用 Agent 执行分支：qa/analysis/review/coding 都会通过事件流运行。
@@ -1124,6 +1137,7 @@ def run_agent_task(*, repo_url: str, prompt: str, thread_id: str | None = None) 
                 approved_plan=approved_plan_text,
             ),
             task_kind=task_kind,
+            event_sink=event_sink,
         )
         store.finish_open_run_events(thread_id, status="completed")
         store.update_thread_status(thread_id, "completed")

@@ -27,6 +27,7 @@ from langgraph.types import Command
 
 from agent.backends.local_shell import LocalShellBackend
 from agent.core.events import record_event
+from agent.core.middleware.fs_policy import FsPolicy, enforce_fs_policy
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 logger = logging.getLogger("agent.run.middleware.tool_sanitize")
@@ -39,6 +40,14 @@ GITHUB_URL_ARGUMENTS = {"repo_url"}
 READ_FILE_INT_ARGUMENTS = {"offset", "limit"}
 # DeepAgents 虚拟绝对路径的根目录白名单，命中时直接放行，不当作宿主机绝对路径处理。
 VIRTUAL_ROOTS = {"projects", "skills", "policies", "reviews", "runtimes", "tmp", "logs"}
+
+# ── 细粒度写权限规则（等价原 FilesystemPermission 声明，但真正生效）──────────
+# 写操作工具：DeepAgents 原生写工具 + 项目自定义写工具。这些工具修改本地文件，
+# 必须按任务类型和虚拟目录做权限校验。
+WRITE_TOOLS = {"write_file", "edit_file", "delete", "upload_files", "upload", "move_file", "copy_file"}
+# 任何任务都禁止写入的虚拟根目录：基础设施、规则资产、敏感目录和记忆。
+# 仓库记忆 /memories 由 runtime 在任务成功后统一写回，模型不能直接改。
+READ_ONLY_WRITE_ROOTS = {"skills", "policies", "runtimes", "logs", "secrets", "memories"}
 
 
 class ToolInputRejected(ValueError):
@@ -91,6 +100,21 @@ def _get_thread_id(request: ToolCallRequest) -> str | None:
     thread_id = configurable.get("thread_id") if isinstance(configurable, dict) else None
     # 防御式校验，避免调用方传入 非dict configurable 导致工具层异常扩散。
     return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
+def _get_task_kind(request: ToolCallRequest) -> str:
+    """从 runtime config 读取当前任务类型，用于细粒度写权限校验。
+
+    task_kind 由 runtime 写入 configurable（见 agent/core/runtime.py），
+    server.get_agent 用它选择系统提示词，这里用它决定 /projects 是否可写。
+    读取不到时按 coding 处理（与 server.py _task_kind_from_config 的默认值一致），
+    避免误伤正常开发任务。
+    """
+
+    config = getattr(getattr(request, "runtime", None), "config", None)
+    configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+    value = configurable.get("task_kind") if isinstance(configurable, dict) else None
+    return value if isinstance(value, str) and value else "coding"
 
 
 def _coerce_int(value: Any) -> Any:
@@ -206,6 +230,66 @@ def _sanitize_github_url(value: Any) -> Any:
         raise ToolInputRejected(str(exc)) from exc
 
 
+def _path_virtual_root(value: Any) -> str | None:
+    """把工具路径参数归一化出虚拟根（projects/skills/...）。
+
+    支持 `/projects/xxx`、`projects/xxx`、`/projects` 等形式；
+    无法识别（绝对宿主路径、空值等）返回 None，交给 sanitize_workspace_path 处理。
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().strip('"').strip("'").replace("\\", "/").lstrip("/")
+    parts = [part for part in cleaned.split("/") if part and part not in {".", ".."}]
+    if not parts:
+        return None
+    first = parts[0].lower()
+    # memories 与 secrets 不在 VIRTUAL_ROOTS（文件协议虚拟根）里，
+    # 但它们是受保护目录，写权限校验必须能识别。
+    if first in VIRTUAL_ROOTS or first in {"secrets", "memories"}:
+        return first
+    return None
+
+
+def enforce_fs_write_permission(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    backend: LocalShellBackend,
+    task_kind: str,
+) -> None:
+    """细粒度写权限校验：等价原 FilesystemPermission 声明，但真正生效。
+
+    规则（与项目最初的声明一致）：
+    1. `/skills`、`/policies`、`/runtimes`、`/logs`、`/secrets`、`/memories`：
+       任何任务都禁止写入（基础设施、规则资产、敏感目录、记忆统一由 runtime 写回）；
+    2. `/projects`：只有 coding 任务可以修改源码，planning/analysis/qa/review 等
+       只读任务一律拒绝；
+    3. `/reviews`、`/tmp`：所有任务允许写入临时产物；
+    4. 其他路径交给 sanitize_workspace_path 与 LocalShellBackend 的既有边界处理。
+
+    拒绝时抛 ToolInputRejected，由 wrap_tool_call 转成模型可读的中文反馈。
+    LocalShellBackend 的 read_only / _write_deny_reason 仍是最终兜底。
+    """
+    if tool_name not in WRITE_TOOLS:
+        return
+    for key in PATH_ARGUMENTS:
+        value = args.get(key)
+        if value is None:
+            continue
+        root = _path_virtual_root(value)
+        if root is None:
+            # 非虚拟路径（绝对宿主路径 / .. 等）交给 sanitize_workspace_path 已有逻辑拒绝。
+            continue
+        if root in READ_ONLY_WRITE_ROOTS:
+            raise ToolInputRejected(
+                f"{tool_name} 禁止写入只读目录 /{root}（基础设施/规则/敏感目录/记忆均由系统管理）"
+            )
+        if root == "projects" and task_kind != "coding":
+            raise ToolInputRejected(
+                f"{tool_name} 当前任务类型是 {task_kind}（只读），禁止修改 /projects 源码"
+            )
+
+
 def sanitize_tool_kwargs(tool_name: str, kwargs: dict[str, Any], *, backend: LocalShellBackend) -> dict[str, Any]:
     """根据参数名对工具入参做统一清洗。
 
@@ -239,10 +323,13 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
     LocalShellBackend 仍是最终安全边界，这里主要负责把常见错误参数转换成 Agent 可恢复的中文反馈。
     """
 
-    def __init__(self, *, backend: LocalShellBackend) -> None:
+    def __init__(self, *, backend: LocalShellBackend, policy: FsPolicy | None = None) -> None:
         super().__init__()
         # backend 提供 workspace 根目录和最终文件系统边界，路径清洗需要给予他判断绝对路径的归属
         self.backend = backend
+        # policy 是 server.py 里 FilesystemPermission 声明编译后的可执行策略；
+        # 传入时优先使用（声明式代码真正生效），未传时回退到本模块硬编码的默认写规则。
+        self.policy = policy
 
     def _sanitize_request(self, request: ToolCallRequest) -> ToolCallRequest:
         """
@@ -261,6 +348,28 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         args = tool_call.get("args", {})
         if not isinstance(args, dict):
             return request
+
+        # 第一步：细粒度写权限校验。
+        # 有 policy（来自 server.py 声明的 FilesystemPermission 编译结果）时用它，
+        # 声明式代码真正生效；没有 policy 时回退到本模块硬编码的默认写规则。
+        # 在参数清洗之前执行，保证对写工具的限制独立于路径格式清洗，
+        # 且拒绝信息对模型可读、可恢复。
+        task_kind = _get_task_kind(request)
+        if self.policy is not None:
+            enforce_fs_policy(
+                self.policy,
+                tool_name=tool_name,
+                args=args,
+                task_kind=task_kind,
+            )
+        else:
+            enforce_fs_write_permission(
+                tool_name,
+                args,
+                backend=self.backend,
+                task_kind=task_kind,
+            )
+
         # 清洗后的 Args
         sanitized_args = sanitize_tool_kwargs(tool_name, args, backend=self.backend)
 
@@ -304,7 +413,7 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "") if isinstance(request.tool_call, dict) else ""
         try:
             return handler(self._sanitize_request(request))
-        except ToolInputRejected as exc:
+        except (ToolInputRejected, ValueError) as exc:
             logger.warning("工具入参被拒绝：tool=%s error=%s", tool_name, mask_token(str(exc)))
             self._record_rejection(request, tool_name, exc)
             return _reject_tool_message(exc, request=request, tool_name=tool_name, backend=self.backend)
@@ -322,7 +431,7 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "") if isinstance(request.tool_call, dict) else ""
         try:
             return await handler(self._sanitize_request(request))
-        except ToolInputRejected as exc:
+        except (ToolInputRejected, ValueError) as exc:
             logger.warning("工具入参被拒绝：tool=%s error=%s", tool_name, mask_token(str(exc)))
             self._record_rejection(request, tool_name, exc)
             return _reject_tool_message(exc, request=request, tool_name=tool_name, backend=self.backend)

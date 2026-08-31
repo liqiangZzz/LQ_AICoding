@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "LQ-AICODING course backend"
 requires-python = ">=3.11"
 dependencies = [
-  "deepagents>=0.6.11",
+  # 注意：deepagents 必须锁 0.6.11。当前代码用 backend_factory + permissions 组合，
+  # 只有 0.6.11 的 FilesystemMiddleware 能创建（backend 传实例 + permissions 会 NotImplementedError）；
+  # 0.7.x 移除了 backend factory，升级会直接报错。
+  "deepagents==0.6.11",
   "fastapi>=0.138.0",
   "httpx>=0.28.0",
   "langchain>=1.2.0",

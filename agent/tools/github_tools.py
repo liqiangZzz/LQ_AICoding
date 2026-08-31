@@ -73,7 +73,8 @@ def open_github_pull_request(
 
     if thread_id:
         # Store 中保存 Pull Request 状态，后续任务列表、详情页和最终结果都可以直接读取。
-        get_store().update_thread_status(thread_id, "pr_created", pr_url=pr_url, branch=head)
+        # 注意：update_thread_status 的参数名是 branch_name，不要传 branch（会 TypeError）。
+        get_store().update_thread_status(thread_id, "pr_created", pr_url=pr_url, branch_name=head)
 
         # 事件表用于前端展示工具执行进度，也便于排查 Agent 在哪个阶段失败。
         record_event(

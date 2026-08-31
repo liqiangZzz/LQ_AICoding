@@ -56,7 +56,7 @@ def _normalize_dashboard_repo_url(repo: str | None, fallback: str | None = None)
     if not text:
         return DEFAULT_REPO_URL
 
-    if text.startswith("http://", "https://"):
+    if text.startswith(("http://", "https://")):
         return text
 
     shorthand = text.removesuffix(".git").strip().strip("/")
@@ -140,7 +140,7 @@ def _pr_payload(thread: dict[str, Any]) -> dict[str, Any] | None:
         "title": thread.get("title") or "LQ-AICODING Pull Request",
         "state": "open",
         "headRef": thread.get("branch_name") or "",
-        "baseRef": "master",
+        "baseRef": "main",
         "url": pr_url,
     }
 
@@ -215,15 +215,15 @@ def _thread_payload(thread: dict[str, Any]) -> dict[str, Any]:
     """
     repo_full_name = _repo_full_name(thread)
     return {
-        "id": thread["id"],
+        "id": thread.get("id") or thread["thread_id"],
         "title": thread.get("title") or "LQ-AICODING Task",
         "repo": repo_full_name,
         "repoFullName": repo_full_name,
-        "branch": thread.get("branch_name") or "master",
+        "branch": thread.get("branch_name") or "main",
         "model": get_env("MAIN_MODEL", "deepseek-v4-pro"),
         "effort": None,
         "source": "dashboard",
-        "status": _status_for_frontend(thread.get("status")),
+        "status": _status_for_frontend(thread.get("latest_run_status")),
         "createdAt": _timestamp_ms(thread.get("created_at")),
         "updatedAt": _timestamp_ms(thread.get("updated_at")),
         "messages": _message_payload(thread),
