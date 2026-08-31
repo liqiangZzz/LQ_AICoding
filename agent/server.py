@@ -14,7 +14,6 @@ from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 
-from agent.core.middleware.fs_policy import compile_fs_policy, main_agent_permissions
 from langgraph.store.base import BaseStore
 
 from agent.backends.local_shell import LocalShellBackend
@@ -427,15 +426,12 @@ def get_agent(config: RunnableConfig):
     main_model = make_main_model()
 
     # 顺序代表调用链：先清洗模型历史和注入上下文，再校验工具输入并兜底工具异常。
-    # 注意：文件工具权限有两层——deepagents 声明式 permissions（见下方
-    # create_deep_agent 的 permissions 参数，0.6.x 下真实走 _check_fs_permission）
-    # 和本中间件的自研策略（compile_fs_policy，覆盖 delete/upload 等库不覆盖的工具）。
-    # 两层判定语义一致（allow 优先于 deny），同时通过才执行，双保险不冲突。
-    fs_policy = compile_fs_policy(main_agent_permissions(task_kind))
+    # 文件工具权限由 deepagents 声明式 permissions 承担（0.6.11 下真实走 _check_fs_permission）；
+    # 本中间件负责工具入参清洗（路径越界/敏感目录/URL 规范化）+ 硬编码写规则兜底。
     middleware = [
         MessageSanitizeMiddleware(),  # 清洗模型历史和用户输入中的无效内容
         ContextInjectionMiddleware(),  # 注入仓库记忆内容
-        SanitizeToolInputsMiddleware(backend=backend, policy=fs_policy),  # 校验工具输入 + 自研权限兜底
+        SanitizeToolInputsMiddleware(backend=backend),  # 校验工具输入
         create_summarization_tool_middleware(main_model, agent_backend),
         ModelCallLimitMiddleware(run_limit=MODEL_CALL_RECURSION_LIMIT, exit_behavior="end"),
         ToolErrorMiddleware(backend=backend),  # 统一工具异常处理
@@ -457,8 +453,8 @@ def get_agent(config: RunnableConfig):
         # 说明（deepagents 0.6.11 + backend_factory 组合）：
         # - permissions 由 FilesystemMiddleware 在 read/write/edit/ls/glob/grep 前真实判定；
         # - execute 命令工具没有工具级权限（0.6/0.7 均未实现），由 LocalShellBackend 守卫；
-        # - SanitizeToolInputsMiddleware 的自研策略（compile_fs_policy）作为第二层，
-        #   覆盖 delete/upload 等库不覆盖的写工具，语义与声明一致，双保险。
+        # - 0.6.11 不暴露 delete/upload 工具，无需工具层额外防线；
+        #   SanitizeToolInputsMiddleware 仍负责路径清洗与硬编码写规则兜底。
         # 子 Agent 的"只读/不修改源码"约束由声明 permissions + system_prompt + read_only 共同保证。
         skills=["/skills/"],  # 从工作区加载内置和用户扩展的 skills
         # 使用仓库记忆

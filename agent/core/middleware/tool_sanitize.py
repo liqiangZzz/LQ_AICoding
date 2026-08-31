@@ -27,7 +27,6 @@ from langgraph.types import Command
 
 from agent.backends.local_shell import LocalShellBackend
 from agent.core.events import record_event
-from agent.core.middleware.fs_policy import FsPolicy, enforce_fs_policy
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
 logger = logging.getLogger("agent.run.middleware.tool_sanitize")
@@ -323,13 +322,10 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
     LocalShellBackend 仍是最终安全边界，这里主要负责把常见错误参数转换成 Agent 可恢复的中文反馈。
     """
 
-    def __init__(self, *, backend: LocalShellBackend, policy: FsPolicy | None = None) -> None:
+    def __init__(self, *, backend: LocalShellBackend) -> None:
         super().__init__()
         # backend 提供 workspace 根目录和最终文件系统边界，路径清洗需要给予他判断绝对路径的归属
         self.backend = backend
-        # policy 是 server.py 里 FilesystemPermission 声明编译后的可执行策略；
-        # 传入时优先使用（声明式代码真正生效），未传时回退到本模块硬编码的默认写规则。
-        self.policy = policy
 
     def _sanitize_request(self, request: ToolCallRequest) -> ToolCallRequest:
         """
@@ -349,26 +345,17 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         if not isinstance(args, dict):
             return request
 
-        # 第一步：细粒度写权限校验。
-        # 有 policy（来自 server.py 声明的 FilesystemPermission 编译结果）时用它，
-        # 声明式代码真正生效；没有 policy 时回退到本模块硬编码的默认写规则。
+        # 第一步：细粒度写权限校验（本模块硬编码规则，等价原 FilesystemPermission 声明）。
         # 在参数清洗之前执行，保证对写工具的限制独立于路径格式清洗，
         # 且拒绝信息对模型可读、可恢复。
-        task_kind = _get_task_kind(request)
-        if self.policy is not None:
-            enforce_fs_policy(
-                self.policy,
-                tool_name=tool_name,
-                args=args,
-                task_kind=task_kind,
-            )
-        else:
-            enforce_fs_write_permission(
-                tool_name,
-                args,
-                backend=self.backend,
-                task_kind=task_kind,
-            )
+        # 注意：deepagents 声明式 permissions 已覆盖 write/edit（0.6.11 下真实生效），
+        # 这里作为第二层兜底，保证 delete/upload 等自定义写工具也有权限约束。
+        enforce_fs_write_permission(
+            tool_name,
+            args,
+            backend=self.backend,
+            task_kind=_get_task_kind(request),
+        )
 
         # 清洗后的 Args
         sanitized_args = sanitize_tool_kwargs(tool_name, args, backend=self.backend)
@@ -413,7 +400,7 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "") if isinstance(request.tool_call, dict) else ""
         try:
             return handler(self._sanitize_request(request))
-        except (ToolInputRejected, ValueError) as exc:
+        except ToolInputRejected as exc:
             logger.warning("工具入参被拒绝：tool=%s error=%s", tool_name, mask_token(str(exc)))
             self._record_rejection(request, tool_name, exc)
             return _reject_tool_message(exc, request=request, tool_name=tool_name, backend=self.backend)
@@ -431,7 +418,7 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         tool_name = str(request.tool_call.get("name") or "") if isinstance(request.tool_call, dict) else ""
         try:
             return await handler(self._sanitize_request(request))
-        except (ToolInputRejected, ValueError) as exc:
+        except ToolInputRejected as exc:
             logger.warning("工具入参被拒绝：tool=%s error=%s", tool_name, mask_token(str(exc)))
             self._record_rejection(request, tool_name, exc)
             return _reject_tool_message(exc, request=request, tool_name=tool_name, backend=self.backend)
