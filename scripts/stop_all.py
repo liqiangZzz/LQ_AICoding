@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
-import re
 from collections.abc import Iterable
-
 
 DEFAULT_PORTS = (2024, 3000)
 

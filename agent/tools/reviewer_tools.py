@@ -15,7 +15,6 @@ from agent.store import get_local_store
 from agent.tools.reviewer_diff import get_local_diff_summary, validate_finding_location, parse_unified_diff
 from agent.tools.runtime_context import get_runtime_thread_id
 
-
 # 默认规则文件路径
 DEFAULT_RULES_PATH = Path(__file__).resolve().parents[1] / "reviewer_rules" / "default_review_rules.md"
 

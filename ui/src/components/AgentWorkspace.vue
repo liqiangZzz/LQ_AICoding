@@ -1,10 +1,10 @@
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+import {nextTick, onMounted, ref, watch} from 'vue'
 
 import ChatComposer from './ChatComposer.vue'
 import ChatMessage from './ChatMessage.vue'
 import SessionSidebar from './SessionSidebar.vue'
-import { useAgentStore } from '../stores/agent'
+import {useAgentStore} from '../stores/agent'
 
 const agent = useAgentStore()
 const messageList = ref(null)

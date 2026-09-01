@@ -34,7 +34,6 @@ from typing import Any
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     ModelRequest,
     ModelResponse,
 )

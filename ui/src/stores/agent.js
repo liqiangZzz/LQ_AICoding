@@ -1,7 +1,7 @@
-import { defineStore } from 'pinia'
+import {defineStore} from 'pinia'
 
-import { dashboardApi } from '../api/client'
-import { streamAgentMessage } from '../api/sse'
+import {dashboardApi} from '../api/client'
+import {streamAgentMessage} from '../api/sse'
 
 const DEFAULT_REPO = 'https://github.com/liqiangZzz/ai_coding'
 

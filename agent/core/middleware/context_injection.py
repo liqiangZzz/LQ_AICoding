@@ -34,7 +34,6 @@ from agent.core.repo_memory import (
 )
 from agent.tools.github_api import mask_token, parse_github_repo_url
 
-
 logger = logging.getLogger("agent.run.middleware.context_injection")
 
 # 控制注入到模型上下文中的仓库记忆最大长度。

@@ -19,7 +19,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest

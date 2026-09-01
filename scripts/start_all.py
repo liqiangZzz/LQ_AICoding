@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
-import os
 import time
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IS_WINDOWS = sys.platform.startswith("win")
